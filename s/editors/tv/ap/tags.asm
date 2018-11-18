@@ -1,0 +1,262 @@
+
+(documentation ">doc>sm>tags.doc")
+
+(variable C-X_dispatch)
+(variable current_buffer)
+(variable goto_buffer)        ;for find_file
+(variable current_filename)   ;    "
+(variable derive_buffer_name) ;    "
+(variable current_tvbuf)      ;    "
+(variable echo_buf)           ;    "
+(variable punt_changes)       ;    "
+(variable display_mode_line)  ;    "
+(variable buffer_list)        ;    "
+(variable read_line)
+(variable replace)
+(static tg1)
+(static tg2)
+(static tg3)
+(static tags_white)
+(static tags_buffer)
+(static tags_file)
+(variable print_msg)
+(variable get_filename_suffix)
+
+(defun user_init()
+       (store (make_gnirt) tags_file)
+       (store (make_buffer) tags_buffer)
+       (store (make_gnirt) tg1)
+       (store (make_gnirt) tg2)
+       (store (make_gnirt) tg3)
+       (store (fill_char_array (make_array 1 128)
+                               "   ^J^L().") tags_white)
+       (as 1 tags_white 13)
+       (as 'goto_tag C-X_dispatch 20)        ;^x^t
+       (as 'open_tags_file C-X_dispatch 116) ;^xt
+       (as 'tagify C-X_dispatch 84))         ;^xT
+
+(defun tags()
+       (open_tags_file))
+
+(defun open_tags_file()
+       (ifnil (eq tags_buffer 0) reask)
+       (store (make_buffer) tags_buffer)
+       (store (make_gnirt) tags_file)
+       (ifnil (eq tg3 0) reask)
+       (store (make_gnirt) tg3)
+reask  (replace tags_file (read_line "Tags File: " 13))
+       (insert ".tags" tags_file)
+       (ift (gep (read_file tags_buffer tags_file) 0) exit)
+       (print_msg "No Such Tags File" 1)
+exit  )
+
+(defun goto_tag(&aux found start char)
+       (ifnil (eq tags_buffer 0) good)
+       (print_msg "No Open Tags File" 1)
+       (return)
+good
+       (delete tg1 99999)
+       (delete tg3 99999)
+       (insert 13 tg1)
+       (insert (read_line "Tag: " 13) tg3)
+       (insert tg3 tg1)
+       (insert 13 tg1)
+       (set_loc tags_buffer 0)
+       (set_loc tags_buffer (iferror (search tags_buffer tg1)
+                                     (add 0 0)))
+       (ifnil (eq (location tags_buffer) 0) win)
+       (print_msg "No Such Tag" 1)
+       (return)
+win
+       (set_loc tags_buffer (iferror (rsearch tags_buffer 12)
+                                     (sub 0 1)))
+       (add_to_loc tags_buffer 1)
+       (store (location tags_buffer) start)
+       (delete tg2 (length tg2))
+       (insert_region tags_buffer start (sub (search tags_buffer 13) 1) tg2)
+       (find_file tg2)
+       (store (get_filename_suffix tg2) tg2)
+       (ift (eq tg2 "pl1") nrml)
+       (ift (eq tg2 "sysin") nrml)
+       (delete tg1 (length tg1))
+       (insert "(defun " tg1)
+       (insert tg3 tg1)
+       (insert 32 tg1)        ; to be deleted below
+nrml   (delete tg1 1)         ; zap last cr
+       (set_loc current_buffer 0)
+loop
+       (set_loc current_buffer (iferror (search current_buffer tg1)
+                                        (goto ick)))
+       (store (nth current_buffer (location current_buffer)) char)
+       (ift (eq char 58) aha)
+       (ift (eq char 40) aha)
+       (ift (eq char 32) aha)
+       (ift (eq char 09) aha)
+       (add_to_loc current_buffer 1)
+       (goto loop)
+ick
+       (print_msg "No Such Tag" 1)
+       (set_loc current_buffer 0)
+aha    
+       )
+
+(defun delete_tags_for(name &aux start)
+       (ifnil (eq tags_buffer 0) win)
+       (print_msg "No Tags File" 1)
+       (return)
+win
+       (delete tg2 (length tg2))
+       (insert 12 tg2)
+       (insert name tg2)
+       (insert 13 tg2)
+       (set_loc tags_buffer (length tags_buffer))
+       (set_loc tags_buffer (iferror (rsearch tags_buffer tg2)
+                                     (progn (print_msg "New Subfile" 1)
+                                            (return))))
+       (store (location tags_buffer) start)
+       (add_to_loc tags_buffer 1)
+       (set_loc tags_buffer (iferror (search tags_buffer 12)
+                                     (length tags_buffer)))
+       (ift (eq (location tags_buffer) (length tags_buffer)) nback)
+       (add_to_loc tags_buffer -1)
+nback
+       (delete tags_buffer (sub start (location tags_buffer)))
+       )
+
+(defun tagify(&aux language)
+       (set_loc current_buffer 0)
+       (delete_tags_for current_filename)
+       (set_loc tags_buffer (length tags_buffer))
+       (insert 12 tags_buffer)
+       (insert current_filename tags_buffer)
+       (insert 13 tags_buffer)
+       (store (get_filename_suffix current_filename) language)
+       (ift (eq language "pl1") dopl1)
+       (ift (eq language "asm") dolisp)
+       (ift (eq language "lisp") dolisp)
+       (tagify_sysin)
+       (goto common)
+dopl1  (tagify_pl1)
+       (goto common)
+dolisp (tagify_lisp)
+common (write_file tags_buffer tags_file))
+
+(defun tagify_pl1(&aux start end)
+next   (set_loc current_buffer (iferror (search current_buffer 58)
+                                        (return)))
+       (store (sub (location current_buffer) 1) end)
+       (set_loc current_buffer (to_token_fa current_buffer))
+       (store (location current_buffer) start)
+       (set_loc current_buffer (over_token_fa current_buffer))
+       (delete tg1 (length tg1))
+       (insert_region current_buffer start (location current_buffer) tg1)
+       (ift (eq tg1 "proc") entag)
+       (ift (eq tg1 "procedure") entag)
+       (ift (eq tg1 "entry") entag)
+       (goto next)
+entag  (set_loc current_buffer end)
+       (set_loc current_buffer (to_token_ba current_buffer))
+       (store (location current_buffer) end)
+       (set_loc current_buffer (over_token_ba current_buffer))
+       (delete tg1 (length tg1))
+       (insert_region current_buffer (location current_buffer) end tg1)
+       (zap_a_tag tg1)
+       (insert tg1 tags_buffer)
+       (insert 13 tags_buffer)
+       (set_loc current_buffer (search current_buffer 58))
+       (goto next))
+
+(defun tagify_lisp(&aux start char)
+next   (set_loc current_buffer (iferror (search current_buffer "(defun ")
+                                        (return)))
+       (set_loc current_buffer (to_token_fa current_buffer))
+       (store (location current_buffer) start)
+more   (set_loc current_buffer (over_token_fa current_buffer))
+       (store (nth current_buffer (location current_buffer)) char)
+       (ift (eq char 43) more)
+       (ift (eq char 45) more)
+       (insert_region current_buffer start (location current_buffer)
+                      tags_buffer)
+       (insert 13 tags_buffer)
+       (goto next))
+
+(defun over_token_fa(buffer)
+       (find_first_in_fa buffer tags_white))
+
+(defun to_token_fa(buffer)
+       (find_first_not_in_fa buffer tags_white))
+
+(defun tagify_sysin(&aux start char)
+loop
+       (store (location current_buffer) start)
+       (store (nth current_buffer start) char)
+       (ift (eq char -1) update)
+       (ift (eq char 32) next)
+       (ift (eq char 09) next)
+       (ift (eq char 42) next)
+       (ift (eq char 12) next)
+       (ift (eq char 13) next)
+eotl
+       (add_to_loc current_buffer 1)
+       (store (nth current_buffer (location current_buffer)) char)
+       (ift (eq char -1) update)
+       (ift (eq char 32) snarf)
+       (ift (eq char 09) snarf)
+       (ift (eq char 13) snarf)
+       (goto eotl)
+snarf
+       (insert_region current_buffer start (location current_buffer)
+                         tags_buffer)
+       (insert 13 tags_buffer)
+next
+       (ift (eq (location current_buffer) (length current_buffer)) update)
+       (set_loc current_buffer (iferror (search current_buffer 13)
+                                        (goto update)))
+
+       (goto loop)
+update )
+
+
+;;; FIND_FILE THAT ASKS IF THERE IS SOMETHING IN THE BUFFER ALREADY
+
+(defun find_file(file &aux buf)
+       (store -1 display_mode_line)
+       (store buffer_list buf)       
+loop
+       (ifnil (eq buf 0) old)
+       (find_file_new file)
+       (return)
+old
+       (ift (eq (car (cdr (cdr (cdr (cdr (car buf)))))) file) ok)
+       (store (cdr buf) buf)
+       (goto loop)
+ok
+       (goto_buffer (car (car buf))))
+
+
+(defun find_file_new(filename &aux nbn)
+       (goto_buffer (derive_buffer_name filename))
+       (ift (eq current_filename filename) won)
+       (ift (eq (length current_buffer) 0) aha)
+       (store (read_line "Buffer exists! BufferName: " 13) nbn)
+       (cond ((gp (length nbn) 0) (goto_buffer nbn))
+             ((t)                 (insert (car current_tvbuf) echo_buf)))
+aha
+       (delete current_filename (length current_filename))
+       (insert filename current_filename)
+       (punt_changes)
+won
+       )
+
+(defun zap_a_tag(tag)
+       (set_loc tags_buffer 0)
+       (delete tg3 (length tg3))
+       (insert 13 tg3)
+       (insert tag tg3)
+       (insert 13 tg3)
+       (set_loc tags_buffer (iferror (search tags_buffer tg3)
+                                     (goto done)))
+       (delete tags_buffer (sub (length tag) 1))
+            (delete tags_buffer -1)
+done   (set_loc tags_buffer (length tags_buffer)))
+^L

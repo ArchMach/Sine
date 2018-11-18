@@ -1,0 +1,16 @@
+
+*
+*    OTA's macro package
+*         (I just can't resist hacking macros any longer)
+*
+
+save macro
+ stm 2,0(stack)
+ ahi stack,56
+ mend
+
+restore macro
+ lm 2,-56(stack,0)
+ mend
+
+^L

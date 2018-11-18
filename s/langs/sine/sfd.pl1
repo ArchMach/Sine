@@ -1,0 +1,604 @@
+
+sfd: proc(screen);  /* Scan For Damage (to the screen) */
+
+dcl 1 screen,
+     2 next ptr,
+     2 buffer_ptr ptr,
+     2 real_posn fixed,
+     2 last_line fixed,
+     2 first_mod fixed,
+     2 displayed fixed,
+     2 current_line fixed,
+     2 pad fixed,
+     2 force_display bit(32),
+     2 emptyp bit(32),
+     2 last_top ptr,
+     2 line_points (1) ptr;
+
+dcl bufp ptr;
+dcl 1 buffer based(bufp),
+     2 next ptr,
+     2 base ptr,
+     2 real_hole bit(32),
+     2 location fixed(31),
+     2 gap_start fixed(31),
+     2 gap_end fixed(31),
+     2 top fixed(31),
+     2 start_mod ptr,
+     2 end_mod ptr;
+
+dcl 1 line_def based unaligned,
+     2 start ptr,
+     2 end ptr,
+     2 empty bit(1),
+     2 pad char(3);
+
+dcl 1 line like line_def;
+dcl $get_line entry (ptr,ptr,bit(1),structure);
+dcl $backup entry (ptr,ptr,fixed,bit(1));
+
+dcl 1 old_screen,
+     2 num_lines fixed,
+     2 lines (25) like line_def;
+
+dcl 1 new_screen,
+     2 num_lines fixed,
+     2 lines (25) like line_def;
+
+dcl (where_start_mod, where_end_mod, where_point, where_first_line) ptr;
+dcl (where_end,where_top) ptr;
+dcl (current_place,starting_place) ptr;
+dcl prefered_line fixed (31);
+dcl (length_of_screen,point_line,old_point_line,lines_to_get,lines_got,
+     bottom_line,start_mod_line,end_mod_line) fixed;
+dcl new_point_line fixed;
+dcl i fixed;
+dcl (tob,bob) bit(1);
+
+     bufp = screen.buffer_ptr;
+     length_of_screen = screen.last_line/4;
+     i = buffer.top;
+     if buffer.gap_end = i then i = buffer.gap_start;
+     where_end = addrel(buffer.base,i);
+     call extract_old_screen(screen,old_screen);
+     where_top = addrel(buffer.base,buffer.top);
+     where_start_mod = unmarkify(buffer.start_mod,buffer);
+     where_end_mod = unmarkify(buffer.end_mod,buffer);
+     where_point = abs(bufp->buffer.location,buffer);
+     where_first_line = unmarkify(screen.line_points(1),buffer);
+     unspec(prefered_line) = screen.force_display;
+     old_point_line = which_line(old_screen,where_point,"1"b);
+     screen.first_mod = -1;
+     screen.force_display = "0"b;
+
+     if prefered_line < 0 then do;
+center:   new_point_line = length_of_screen/2+1;
+          go to start_backup;
+          end;
+     else if prefered_line > 0 then do;
+          new_point_line = prefered_line+1;
+          go to start_backup;
+          end;
+     else if old_point_line > length_of_screen then go to center;
+     else if (where_start_mod < where_first_line &
+              where_end_mod > where_first_line) then do;
+          new_point_line = old_point_line+1;
+          go to start_backup;
+          end;
+     else if (((where_end_mod = where_first_line) &
+              (where_start_mod <= where_end_mod)) &
+              (rel(where_start_mod) < rel(screen.last_top)))
+          then do;
+               go to center;
+start_backup:
+/*
+     If the area of modification includes the beginning of the screen
+     then we are unsure as to where the top of the screen is.  Also if the
+     optimal centering of the screen is desired then the top of the screen
+     is unknown.  The following code finds it by backing up a
+     distance that is sure to be far enough and going forward until
+     we get to a line containing point.  Then we backup until we get
+     to the top of the screen.
+
+     If the prefered_line indicates a recentering or if a line is specified
+     and the old screen didn't contain all the info then we also need
+     to find the top of the screen.  The case of prefered_line <=
+     old_point_line can be optimize by just copying info out of the
+     old screen but it isn't worth it here.
+
+     If the current_point has fallen off the bottom of the screen we
+     must also recenter ourselves.
+*/
+
+               call $backup(bufp,starting_place,new_point_line,tob);
+/*
+dcl scs$ioa_nnl entry options(variable);
+call scs$ioa_nnl("^40:23oxybackup: ^p, ^i lines, ^2w",starting_place,
+     new_point_line,tob);
+call scs$ioa_nnl("^20:24oxystart: ^p, end: ^p, first: ^4w, top: ^4w",
+     where_start_mod,where_end_mod,rel(where_first_line),rel(screen.last_top));
+call scs$ioa_nnl("^1:24oxypt: ^p, opl: ^i",where_point,old_point_line);
+*/
+
+               call stack$flush;
+               current_place = starting_place;
+find_point:    call $get_line (buffer_ptr,current_place,bob,line);
+               if ^line.empty then do;
+                    call stack$push(line);
+                    if ^inlinep(where_point,line) then go to find_point;
+                    end;
+               point_line = stack$count();   /* save line number of point */
+               if point_line <= new_point_line
+                    then new_point_line = point_line + 1;
+
+/*
+     Now we have to select the correct place to put the point_line on the
+     screen.  There are two steps to this: first to decide how many lines
+     after point we would like to fill up the screen, and second deciding
+     where to start filling in the lines that we pop off the stack.
+
+     The procedure for finding the optimal placing for the point_line
+     depends on whether the guy has a preference or not.  If he has a
+     specific line in mind then we would like to fill from the prefered
+     line to the end with lines after point.  If he said "recenter" or
+     if we don't know where old_point_line was then try and fill as much
+     of the screen as possible.  If there were not modifications above
+     point then we can minimize the amount of redisplay by leaving the
+     point_line where it was.
+*/
+/*
+               if prefered_line > 0
+                    then lines_to_get = length_of_screen - prefered_line;
+                    else if where_end_mod <= where_point & prefered_line = 0
+                              & old_point_line <= length_of_screen
+                              & screen.last_top = where_first_line
+                         then lines_to_get = length_of_screen - 
+                              old_point_line;
+                         else do;
+                              lines_to_get = max (length_of_screen-point_line,
+                                   length_of_screen/2);
+                              if prefered_line = 0 then prefered_line = -2;
+                              end;
+*/
+
+               lines_to_get = length_of_screen - new_point_line + 1;
+               do i = 1 to lines_to_get while(bob = "0"b);
+                    call $get_line (buffer_ptr,current_place,bob,line);
+                    call stack$push (line);
+                    end;
+               lines_got = stack$count() - point_line;
+
+/*
+     Now we are all set and just have to fill in the new screen with
+     the lines we've found.  If the stack empties it will return "blank"
+     lines.  If there weren't enough lines to fill the bottom part of the
+     screen then if the point_line is fixed just fill with blanks else
+     try and split up the "extra" lines between the top part and the bottom
+     part.
+*/
+/*
+               if prefered_line < 0
+                    then if prefered_line = -2 & lines_got = 0
+                              then bottom_line = (length_of_screen+1)/2;
+                              else bottom_line = length_of_screen -
+                                   (lines_to_get-lines_got)/2;
+                    else if prefered_line = 0
+                         then bottom_line = length_of_screen -
+                              (lines_to_get - lines_got);
+                         else bottom_line = prefered_line + lines_got;
+*/
+               bottom_line = new_point_line + lines_got - 1;
+               do i = bottom_line+1 to length_of_screen;
+                    call line$empty(new_screen.lines(i));
+                    end;
+               do i = bottom_line to 1 by -1;
+                    call stack$pop(new_screen.lines(i));
+                    end;
+               old_point_line = bottom_line - lines_got;
+               end;
+          else do;
+/*
+     In this case the modifications to the buffer (if any) are after the
+     point so we should leave it where it is to minimize redisplay.  Thus
+     we copy the old_screen's info info the new screen until we get to
+     a line containing where_start_mod or the end of the screen.  If we
+     encounter modifications we just start consing up new lines.
+*/
+               if where_start_mod > where_end_mod then go to punt;
+               start_mod_line = which_line(old_screen,where_start_mod,"1"b);
+               if where_start_mod = old_screen.lines(start_mod_line).start
+                    then start_mod_line = start_mod_line -1;
+               if start_mod_line = 0 then start_mod_line = 1;
+               do i = 1 to start_mod_line - 1;
+                    call line$assign(new_screen.lines(i),old_screen.lines(i));
+                    end;
+               if start_mod_line <= length_of_screen then do;
+                    current_place = old_screen.lines(start_mod_line).start;
+                    end_mod_line = which_line(old_screen,where_end_mod,"1"b);
+                    do i = start_mod_line to length_of_screen;
+                         call $get_line(buffer_ptr,current_place,bob,line);
+                         call line$assign(new_screen.lines(i),line);
+                         if i > end_mod_line &
+                            line$equal(line,old_screen.lines(i)) then do;
+                              do i = i+1 to length_of_screen;
+                                   call line$assign(new_screen.lines(i),
+                                        old_screen.lines(i));
+                                   end;
+                              leave;
+                              end;
+                         end;
+                    old_point_line = which_line(new_screen,where_point,"0"b);
+                    if old_point_line > length_of_screen then go to center;
+                    end;
+               end;
+/*
+     All that is left is to decide which lines should be printed.
+*/
+     start_mod_line = which_line(new_screen,where_start_mod,"1"b);
+     end_mod_line = which_line(new_screen,where_end_mod,"1"b);
+     if prefered_line = -1    /* the screen is garbage redisp everything */
+          then do;
+               screen.force_display = "ffffffff"b4;
+               do i = 1 to length_of_screen;
+                    call line$assign(old_screen.lines(i), new_screen.lines(i));
+                    end;
+               end;
+          else do;
+               do i = 1 to length_of_screen;
+                    if ^line$equal(new_screen.lines(i),old_screen.lines(i))
+                         then do;
+                              call line$assign(old_screen.lines(i),
+                                   new_screen.lines(i));
+                              substr(screen.force_display,i,1) = "1"b;
+                              end;
+                    end;
+               if ^substr(screen.force_display,start_mod_line-1,1)
+                  | start_mod_line = 1 then if where_start_mod <= where_end_mod
+                    then screen.first_mod = start_mod_line*4-4;
+               do i = start_mod_line to end_mod_line;  /* anything modified */
+                    substr(screen.force_display,i,1) = "1"b;
+                    end;
+               end;
+
+punt:
+     call insert_new_screen(screen,old_screen);
+     if old_point_line = 0 then old_point_line = 1;
+     screen.current_line = old_point_line*4 - 4;
+     screen.last_top = where_first_line;
+     return;
+
+buffer_stuff:proc returns(char(1));
+
+dcl 1 buf like buffer;
+dcl place ptr;
+dcl (bob,tob) bit(1);
+dcl char char(1);
+dcl bchar char(1) based(place);
+
+buffer$get_next_char: entry (buf,place,bob) returns(char(1));
+
+     if place = addrel(buf.base,buf.gap_start)
+          then place = addrel(buf.base,buf.gap_end);
+     if place >= addrel(buf.base,buf.top)
+          then do;
+               bob = "1"b;
+               return ("X");
+               end;
+          else bob = "0"b;
+     char = bchar;
+     place = addrel (place,1);
+     return (char);
+
+buffer$get_previous_char: entry (buf,place,tob) returns(char(1));
+
+     if place = addrel(buf.base,buf.gap_end)
+          then place = addrel(buf.base,buf.gap_start);
+     if place <= buf.base
+          then do;
+               tob = "1"b;
+               return ("X");
+               end;
+     tob = "0"b;
+     place = addrel(place,-1);
+     return (bchar);
+
+     end; /* buffer stuff */
+
+
+dcl 1 l like line_def;
+dcl 1 stack based(tos),
+     2 prev ptr,
+     2 l like line_def;
+dcl tos ptr static init(null());
+dcl tp ptr;
+dcl cnt fixed;
+
+stack$flush:proc;
+
+     do tos = tos repeat tp while (tos ^= null());
+          tp = stack.prev;
+          free stack;
+          end;
+     cnt = 0;
+     end;
+
+stack$push: proc(line);
+dcl 1 line like line_def;
+
+     tp = tos;
+     allocate stack;
+     prev = tp;
+     cnt = cnt + 1;
+     stack.l = line;
+/*   call line$assign(stack.l,line); */
+
+     return;
+     end;
+
+stack$pop: proc (line);
+dcl 1 line like line_def;
+     if tos = null() then do;
+          call line$empty(line);
+          return;
+          end;
+     tp = prev;
+     line = stack.l;
+/*   call line$assign(line, stack.l); */
+
+     free stack;
+     tos = tp;
+     end;
+
+stack$count: proc returns (fixed);
+     return (cnt);
+     end;
+/*
+get_line: proc(place,bob,line);
+dcl place ptr;
+dcl bob bit(1);
+dcl 1 line like line_def;
+dcl char char(1);
+dcl i fixed init(0);
+dcl bchar char(1) based(place);
+
+     line.start = place;
+     if place = addrel(buffer.base,buffer.gap_start)
+          then place = addrel(buffer.base,buffer.gap_end);
+     if place >= where_top
+          then do;
+               line.empty = "1"b;
+               bob = "1"b;
+               return;
+               end;
+     bob = "0"b;
+     char = bchar;
+     place = addrel (place,1);
+
+get_char_loop:
+     if char = "\m" then go to got_a_line;
+     if place = addrel(buffer.base,buffer.gap_start)
+          then place = addrel(buffer.base,buffer.gap_end);
+     if place < where_top
+          then do;
+               char = bchar;
+               place = addrel (place,1);
+               go to get_char_loop;
+               end;
+          else bob = "1"b;
+
+got_a_line:
+     line.end = place;
+     line.empty = "0"b;
+     return;
+     end;
+*/
+
+which_line:proc(ls,place,last_line) returns (fixed);
+
+dcl 1 ls like new_screen;
+dcl place ptr;
+dcl last_line bit(1);
+
+dcl i fixed;
+dcl before bit(1) init("0"b);
+dcl (b,e) ptr;
+dcl where_i_am ptr;
+
+     where_i_am = place;
+     if where_i_am < ls.lines(1).start then return (length_of_screen+1);
+     do i = 1 to length_of_screen;
+          if ls.lines(i).empty
+               then if before
+                    then return(i-1);
+                    else continue;
+               else before = "1"b;
+          b = ls.lines(i).start;
+          e = ls.lines(i).end;
+          if where_i_am = b then if b = e then go to ret;
+          if where_i_am >= b then if where_i_am < e then go to ret;
+          end;
+     if last_line then
+          if where_i_am=e then if e=where_end then return(length_of_screen);
+ret:
+     return (i);
+     end; /* which line */
+
+line$assign:proc(line1,line2);
+
+dcl 1 line1 like line_def;
+dcl 1 line2 like line_def;
+
+     line1 = line2;
+/*
+     line1.start = line2.start;
+     line1.end = line2.end;
+     line1.empty = line2.empty;
+*/
+     end;
+
+line$equal:    proc(line1,line2) returns(bit(1));
+dcl 1 line1 like line_def;
+dcl 1 line2 like line_def;
+
+     if line1.empty then if line2.empty then return ("1"b);
+                                        else return ("0"b);
+                    else if line2.empty then return ("0"b);
+     if line1.start = line2.start then if line1.end = line2.end
+          then return ("1"b);
+     return("0"b);
+     end;
+
+line$emptyp:proc(line) returns(bit(1));
+dcl 1 line like line_def;
+     return(line.empty);
+end;
+
+line$empty:proc (line);
+
+dcl 1 line like line_def;
+
+     line.empty = "1"b;
+     return;
+     end;
+
+line$start:proc(line) returns(ptr);
+
+dcl 1 line like line_def;
+
+     if line.empty
+          then return(null());
+          else return(line.start);
+     end;
+
+line$end:proc(line) returns(ptr);
+
+dcl 1 line like line_def;
+
+     if line.empty
+          then return(null());
+          else return(line.end);
+     end;
+
+inlinep:  proc(place,line) returns(bit(1));
+dcl place ptr;
+dcl 1 line like line_def;
+
+     if line.empty then return("0"b);
+     if place >= line.start then if place < line.end
+          then return ("1"b);
+     return ("0"b);
+     end;
+
+unmarkify:     proc(mark_ptr,buf) returns(ptr);
+
+dcl mark_ptr ptr;
+dcl 1 buf like buffer;
+dcl 1 mark based(mark_ptr),
+     2 next ptr,
+     2 top_part bit(16),
+     2 abs_offset bit(16);
+dcl tp ptr;
+
+     tp = addrel(buf.base,abs_offset);
+     if tp = addrel(buf.base,buf.gap_end)
+          then tp = addrel(buf.base,buf.gap_start);
+     return (tp);
+
+markify:  entry(mark_ptr,place);
+dcl place ptr;
+     mark_ptr->mark.abs_offset = unspec(rel(place));
+/*   if abs_offset = buffer.gap_start then abs_offset = buffer.gap_end;*/
+     return;
+
+     end;
+
+abs: proc(offset,buf) returns(ptr);
+
+dcl offset fixed(31);
+dcl 1 buf like buffer;
+dcl i fixed(31);
+     i = offset;
+     if buf.gap_start < i then i = i + buf.gap_end-buf.gap_start;
+     return (addrel(buf.base,i));
+     end;
+
+max: proc(a,b) returns(fixed);
+dcl (a,b) fixed;
+if a > b
+     then return (a);
+     else return (b);
+end;
+
+extract_old_screen:proc(source,object);
+dcl 1 source like screen;
+dcl 1 object like old_screen;
+dcl ll ptr;
+dcl lll ptr;
+
+     object.num_lines = length_of_screen;
+     ll = unmarkify(source.line_points(1),buffer);
+     do i = 1 to length_of_screen;
+          object.lines(i).start = ll;
+          lll = unmarkify(source.line_points(i+1),buffer);
+          object.lines(i).end = lll;
+          object.lines(i).empty = substr(source.emptyp,i,1);
+/*
+          if rel(ll) = 0 then if rel(lll) = 0 then object.lines(i).empty="1"b;
+          if ll = where_end then if lll = where_end
+               then object.lines(i).empty="1"b;
+*/
+          ll = lll;
+          end;
+end;
+
+insert_new_screen:proc(source,object);
+dcl 1 source like screen;
+dcl 1 object like new_screen;
+dcl j fixed;
+dcl all_empty bit(1) init("1"b);
+
+     do i = 1 to length_of_screen;
+          substr(source.emptyp,i,1) = object.lines(i).empty;
+          end;
+     do i = 1 to length_of_screen;
+          if ^object.lines(i).empty then do;
+               all_empty = "0"b;
+               tp = object.lines(i).start;
+               do j = 1 to i;
+                    call markify(source.line_points(j),tp);
+                    end;
+               do i = i+1 to length_of_screen;
+                    if object.lines(i).empty then do;
+                         tp = object.lines(i-1).end;
+                         call markify(source.line_points(i),tp);
+                         if rel(tp) = buffer.gap_start
+                              then rel(tp) = buffer.gap_end;
+                         do j = i+1 to length_of_screen+1;
+                              call markify(source.line_points(j),tp);
+                              end;
+                         return;
+                         end;
+                    call markify(source.line_points(i),
+                                 object.lines(i).start);
+                    end;
+               call markify(source.line_points(length_of_screen+1),
+                            object.lines(length_of_screen).end);
+               return;
+               end;
+          end;
+
+     if all_empty then do;
+          tp = buffer.base;
+          do i = 1 to length_of_screen+1;
+               call markify(source.line_points(i),tp);
+               if i = old_point_line then tp = addrel(tp,buffer.top);
+               end;
+          end;
+
+     return;
+
+end; /* insert_new_screen */
+
+end;
+
+^L

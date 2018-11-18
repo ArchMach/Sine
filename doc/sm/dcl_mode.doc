@@ -1,0 +1,14 @@
+
+^Ddo_call_dcl: 
+if in a declare statement - finishes the declaration of the last token
+otherwise - prompts for the arguments to the subroutine
+
+^Ddo_declare: finish the current declaration
+
+^Ddo_call: finish the call in progress prompting for each argument
+
+^Ddcl_elsewhere: declare the preceding variable with the other
+declarations, prompting for its type if necessary
+
+wotT (3.925 3 1.06) >doc>sm
+

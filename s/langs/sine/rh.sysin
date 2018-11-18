@@ -1,0 +1,754 @@
+
+          incl defuns
+          extrn     swap_in   *** not used ***
+          extrd     linkage$no_display  horrible hacks for tty's
+          incl data_types
+
+          pc   0
+          org  0
+          incl static
+          pc   1
+
+          entry     real_make_screen,real_display,real_force_display
+          entry     real_print,real_display_screen,get_line,real_get_hpos
+          entry     backup
+
+          extrn     $allocate,$get_init,$getr_init,$make_variable,$make_mark
+          extrn     $set_mark_reg,$eval_mark_reg,$tyi
+          extrn     iocs$order,iocs$put_chars,$sfd
+
+*    1 screen based,
+*         2 next ptr,              /* next screen */
+*         2 buffer ptr,            /* could be a string */
+*         2 line_on_screen fixed,  /* physical starting line */
+*         2 last_line fixed;       /* (number_of_lines - 1) * 4 */
+*         2 first_mod fixed,       /* line containing start_mod */
+*         2 displayed fixed,       /* flag set when display is started */
+*         2 force_display bit(32), /* force redisplay on these lines */
+*         2 lines(n) ptr;          /* mark for each line */
+
+*    1 lines static,
+*         2 screen(25) ptr,        /* ptr to screen this line is part of */
+*         2 next(25) ptr;          /* ptr to a list of previous screens */
+
+*         This little routine updates the display of the screen.
+
+*         It goes over each line and updates the screen that line
+*         is in.  If the point in not visible then a recenter is
+*         performed.  Otherwise the pt is fixed on the screen and
+*         the start_mod and end_mod markers are examined to determine
+*         what stuff to redisplay.  The redisplay process only up
+*         dates the line markersbut does no actual IO.  This is done
+*         in a second simple pass.  The end of the current screen
+*         is defined by a change in the window ptrs.  After all the
+*         screens are updated and redisplayed the start_mod and end_mod
+*         markers are reset to show no modification.
+
+line           equ  first_free+5
+screen         equ  first_free+6
+
+*    make_screen a,b,c  Takes a buffer "a" and puts it on the screen
+*    starting at physical line number "b" and in a window "c" lines long.
+
+real_make_screen    equ  *
+          save
+          lhi  5,screen_size
+          ahi  5,num_of_lines*4              max of 24 lines/screen
+          bal  link,$allocate
+          lr   screen,rv
+          oi   screen,screen_bits
+          l    source,op1(ops)
+          st   source,screen.buffer(screen)
+          l    temp,screen_chain(ls)
+          st   temp,screen.next(screen)      thread it on the list
+          st   screen,screen_chain(ls)
+          lis  temp,0
+          lhi  t1,num_of_lines*4-4
+ms.zap    st   temp,screen.start(screen,t1)  for the gc
+          sis  t1,4
+          bnms ms.zap
+
+*         check to see if initialization is needed
+
+          la   temp,current_screen_string
+          st   temp,op1(ops)
+          bal  link,$make_variable
+          st   rv,current_screen_ptr(ls)
+
+ms.no_init     equ  *
+          lis  index,0
+          l    rv,buffer.start_mod(source)
+          bnzs ms.is_start
+          bal  link,$make_mark
+          st   rv,buffer.start_mod(source)
+          bal  link,$set_mark_reg                 install in marker chain
+ms.is_start    equ  *
+          l    temp,buffer.top(source)
+          st   temp,marker.mv(rv)
+          l    rv,buffer.end_mod(source)
+          bnzs ms.is_end
+          bal  link,$make_mark
+          st   rv,buffer.end_mod(source)
+          bal  link,$set_mark_reg
+ms.is_end lis  temp,0
+          st   temp,marker.mv(rv)
+          st   temp,screen.last_top(screen)
+          sth  temp,screen.displayed(screen)
+          lcs  temp,1
+          st   temp,screen.force_display(screen)
+          st   temp,screen.emptyp(screen)
+
+          lhi  line,num_of_lines*4-4
+          lis  index,0
+ms.loop   bal  link,$make_mark
+          st   rv,screen.start(line,screen)
+          bal  link,$set_mark_reg            uses source,rv,index
+          sis  line,4
+          bnms ms.loop
+
+          lr   rv,screen
+          b    popj
+
+*    This makes sure a screen will be redisplayed
+
+real_display_screen equ  *
+* screen equ t2
+          l    screen,op1(ops)                    get screen to display
+          l    t1,op3(ops)                        get length of screen
+          slls t1,2
+          l    t3,op2(ops)                        get place to put it
+
+          lr   screen,screen                      save in screen if ^clearing
+          bzs  ds.no_set
+          sth  t1,screen.last_line(screen)
+          sth  t3,screen.line_on_screen(screen)
+
+ds.no_set sis  t3,1
+          slls t3,2
+          la   rv,lines.screen(ls,t3)
+          ar   t3,t1                              make abs. line #
+          srls t3,2
+ds.loop   sis  t3,1
+          sis  t1,4
+          bmr  link
+          cl   screen,0(rv,t1)
+          bes  ds.loop
+          sbt  t3,bashed_lines
+          st   screen,0(rv,t1)
+          bs   ds.loop
+
+*    This just forces the redisplay of a window.
+
+real_force_display  equ  *
+          l    screen,op1(ops)
+          l    temp,op2(ops)                 get line for center or -1
+          st   temp,screen.force_display(screen)
+          br   link
+
+*    This routine which makes sure that all windows on the screen are
+*    correct.
+
+real_display   equ  *
+          save
+
+          lr   rv,2      ultra paranoia since 2 may be important
+          bal  link,linkage$no_display
+          lb   0,0(2)
+          lr   2,rv
+          thi  0,x'80'
+          bnz  popj
+
+          l    rv,linel_ptr(ls)
+          l    temp,variable.value(rv)
+          sth  temp,linel
+
+          lis  line,0                   start at first line
+disp.next l    screen,lines.screen(line,ls)
+          bzs  disp.inc_line
+          bal  link,scan_for_damage
+disp.inc_line  equ  *
+          lh   temp,breakp(ls)
+          bnz  popj                     if break hit punt
+          bal  link,show_line
+          ais  line,4
+          clhi line,num_of_lines*4
+          bnls reset_screen
+          cl   screen,lines.screen(line,ls)
+          bes  disp.inc_line            another line on same screen
+          b    disp.next                new and different screen
+
+     instruction    _reset_screen
+reset_screen   l    screen,screen_chain(ls)
+disp.reset_l   lh   temp,screen.displayed(screen)
+          bz   reset_next
+reset_it  l    source,screen.buffer(screen)  reset the modification markers
+          l    rv,buffer.start_mod(source)
+          l    temp,buffer.top(source)
+          st   temp,marker.mv(rv)
+          l    rv,buffer.end_mod(source)
+          lis  temp,0
+          st   temp,marker.mv(rv)
+          sth  temp,screen.displayed(screen)
+          st   temp,screen.force_display(screen)
+reset_next     l    screen,screen.next(screen)
+          bnz  disp.reset_l
+
+          l    t1,current_screen_ptr(ls)
+          l    screen,variable.value(t1)
+          l    source,screen.buffer(screen)
+          l    index,buffer.location(source)
+          make_absolute_bufptr     index,source
+          st   index,save.index
+          lh   line,screen.current_line(screen)
+          st   line,save.line
+          lis  index,0
+          bal  link,$get_init
+          lis  colno,1
+          l    index,screen.start(line,screen)
+          l    index,marker.mv(index)
+disp.find_pos  equ  *
+          cl   index,save.index
+          bnls disp.position
+          bal  link,assemble_char
+          bs   disp.find_pos
+disp.position  equ  *
+          clhi colno,1
+          bnes disp.no_next_line
+          l    line,save.line
+          l    get,screen.start(line,screen)
+          cl   index,marker.mv(get)
+          bes  disp.no_next_line
+          ais  line,4                        it fell into the next line
+          st   line,save.line
+disp.no_next_line   equ  *
+          lhi  char,c'xy'                    position to right place
+          sth  char,dispop(ls)
+          sth  colno,x_cord(ls)
+          l    char,save.line
+          srls char,2
+          ah   char,screen.line_on_screen(screen)
+          sth  char,y_cord(ls)
+
+          la   char,user_output(ls)          setup for call to order
+          st   char,arg1p(sp)
+          la   char,curpos_string
+          st   char,arg2p(sp)
+          la   char,pos_struc_ptr(ls)
+          st   char,arg3p(sp)
+          la   char,code(ls)
+          st   char,arg4p(sp)
+          lhi  char,20
+          st   char,alist_size(sp)
+          la   ap,alist(sp)
+
+          save
+          bal  link,iocs$order
+          restore
+
+          b    popj
+
+     instruction    _scan_for_damage
+scan_for_damage equ *
+
+          lh   temp,screen.displayed(screen)      already done
+          bnzr link
+          lis  temp,1
+          sth  temp,screen.displayed(screen)
+
+          save
+          l    source,screen.buffer(screen)
+          lis  index,0
+          bal  link,$get_init                     make sure it's swapped in.
+          lis  temp,8
+          st   temp,alist_size(sp)
+          st   screen,arg1p(sp)
+          la   ap,alist(sp)
+          st   stack,state.sp(ls)                 so it can call back in.
+          bal  link,$sfd
+          b    popj
+
+colno     equ  first_free+7                  So put_ptr and sink can be used
+
+          pc   0
+          org  0
+line.start     ds   4
+line.end       ds   4
+line.empty     ds   1
+          pc   1
+
+get_line  equ  *
+          .ent 0
+          l    stack,state.sp(ls)
+
+*    This routine is called from sfd.pl1 with current_buffer,place,bob,line.
+*         current_buffer is the buffer that is being scaned.
+*         place is the ptr to the beginning of the line
+*         bob if a bit one vbl which is whether the line falls off the end.
+*         line is a structure defined above.
+
+*    This routine reads characters using "get" until it gets a full line.
+*    It returns with reg 0 (char ,temp) set to -1 if it is at the end
+*    of the buffer.
+
+          save
+          l    rv,4(ap)
+          l    source,0(rv)
+          lis  index,0
+          bal  link,$get_init
+
+          l    rv,8(ap)
+          l    index,0(rv)
+          l    t2,16(ap)                          get ptr to line
+          st   index,line.start(t2)
+          s    index,buffer.base(source)          get compatable form
+          lis  colno,1
+
+          lr   rv,index
+          cl   index,buffer.gap_start(source)
+          bl   gl.loop                       ^empty
+          bps  gl.emptyp
+          l    rv,buffer.gap_end(source)
+gl.emptyp l    temp,buffer.top(source)
+          sr   temp,rv
+          bnzs gl.loop                       room in upper section
+          lcs  temp,1                        empty = "1"b
+          stb  temp,line.empty(t2)
+          l    rv,12(ap)
+          stb  temp,0(rv)                    empty implied bob
+          b    gl.real_return
+
+gl.loop   st   index,save.index              save incase we have to backup
+          bal  link,assemble_char
+          lr   char,char
+          bm   gl.return
+          clhi char,x'0d'                    CR
+          be   gl.not_bob_return
+gl.check_colno equ  *
+          clh  colno,linel
+          bls  gl.loop                       still more room.
+          bes  gl.is_it_too_long
+          l    index,save.index              fell off end (back up one)
+          bs   gl.not_bob_return
+gl.is_it_too_long   equ  *                   check next char
+          st   index,save.index
+          balr link,get
+          lhi  link,0                        do nothing
+          clhi char,x'0d'
+          bes  gl.not_bob_return
+          l    index,save.index              lne is really too long
+gl.not_bob_return   equ  *
+          lis  t1,0
+          bs   gl.return
+
+gl.bob_return  equ  *
+          lcs  t1,1                          bob = "1"b
+gl.return equ  *
+          l    rv,12(ap)
+          stb  t1,0(rv)                      set up bob
+          l    rv,16(ap)
+          a    index,buffer.base(source)
+          st   index,line.end(rv)
+          l    t1,8(ap)
+          st   index,0(t1)                   bump place to new value
+          lis  temp,0                        ^empty
+          stb  temp,line.empty(rv)
+
+gl.real_return equ  *
+          restore
+          .rtn
+
+backup    .ent 0
+          l    stack,state.sp(ls)
+
+          l    1,4(ap)
+          l    source,0(1)                   get buffer
+          l    index,buffer.location(source)
+          bal  link,$getr_init
+          l    1,12(ap)
+          lh   t1,0(1)                       get number of lines
+          lr   t2,t1
+          mh   t2,linel(ls)                  max number of chars
+
+b.loop    balr link,get
+          lcs  t1,1
+          bs   b.done
+          sis  t2,1
+          bms  b.no_set
+          clhi char,13                       count crs too.
+          bnes b.loop
+          sis  t1,1
+          bnms b.loop
+
+b.no_set  lis  t1,0                          not to beginning of buffer.
+b.done    ais  index,1
+          a    index,buffer.base(source)
+          l    1,8(ap)
+          st   index,0(1)                    return new ptr
+          l    1,16(ap)
+          stb  t1,0(1)                       return tob flag
+
+          .rtn
+
+
+*    This gets a char and increments colno by the approptiate amount
+
+assemble_char  equ  *
+          lr   rv,link
+          balr link,get
+          lr   link,rv
+          br   link                          if error (fell off end)
+          lr   link,rv                       returns here if get a char
+          nhi  char,x'7f'
+          clhi char,x'0d'                    CR: resets colno
+          bnes ac.not_cr
+          st   colno,save.colno              save this for get_line
+          lis  colno,1
+          br   link
+ac.not_cr clhi char,x'09'                    Tab
+          bnes ac.reg
+          lr   type,colno                    uses type,sink which are cont.
+          sis  type,1
+          dh   type,five                     remander->type,quotient->sink
+          mh   sink,five
+          ais  sink,6
+          lr   colno,sink
+          br   link
+five      dc   5
+
+ac.reg    lr   rv,char
+          slls rv,1
+          ah   colno,size_table(rv)
+          br   link
+
+*    This routine check the current line and checks
+*    the damage switch.  If the switch is set the line is assembled
+*    and output at the appropriate place on the screen.  If only the
+*    redisplay switch is set then that line is output from the
+*    start_mod position to the end of the line.
+
+     instruction    _show_line
+
+show_line      equ *
+          lr   screen,screen
+          bzr  link                          we get some real weirdos!
+          save
+
+          l    source,screen.buffer(screen)
+          lr   rv,line
+          lh   temp,screen.line_on_screen(screen)
+          sis  temp,1
+          slls temp,2
+          sr   line,temp                     get line relative to screen
+          st   line,save.line
+
+          srls rv,2                          test real line number
+          rbt  rv,bashed_lines               clear and test
+          bnz  sl.stuff_it
+
+          clh  line,screen.first_mod(screen)
+          bes  sl.start_mod                  do this line.
+
+          tbt  rv,screen.force_display(screen)
+          bz   popj
+          b    sl.stuff_it
+
+*    This means output line from start_mod to end else same as negative flag
+
+sl.start_mod   equ  *
+          lis  index,0
+          bal  link,$get_init
+
+          l    rv,screen.start(line,screen)
+          l    index,marker.mv(rv)
+          lis  colno,1
+          l    rv,buffer.start_mod(source)        go to sm before printing
+          l    type,marker.mv(rv)
+          st   type,save.index
+sl.find_sm     equ  *
+          cl   index,save.index                   stop at start_mod
+          bnl  sl.put_it
+          bal  link,assemble_char                 this bashes rv,type,line
+          clhi char,x'0d'
+          bnes sl.find_sm
+          lis  temp,4
+          ahm  temp,screen.first_mod(screen)      sm is really on next line
+          b    popj                               punt if sm is at end of line
+
+sl.stuff_it    equ  *
+          lis  index,0
+          bal  link,$get_init
+          l    rv,screen.start(line,screen)
+          l    index,marker.mv(rv)
+          lis  colno,1
+sl.put_it la   type,io_buffer(sp)                 running low on regs
+          l    line,save.line
+          l    rv,screen.start+4(line,screen)
+sl.stuff_l     equ  *
+          cl   index,marker.mv(rv)                are we done yet?
+          bnls sl.output
+          balr link,get
+          b    error11                            can't report this as an error
+*         bal  link,error                         shouldn't run out of chars
+error11   equ  *
+          clhi char,x'0d'
+          bes  sl.output
+          stb  char,0(type)
+          ais  type,1
+          bs   sl.stuff_l
+
+sl.output lhi  char,c'xy'                    position to right place
+          sth  char,dispop(ls)
+          sth  colno,x_cord(ls)
+          lr   char,line
+          srls char,2
+          ah   char,screen.line_on_screen(screen)
+          sth  char,y_cord(ls)
+
+          la   char,user_output(ls)          setup for call to order
+          st   char,arg1p(sp)
+          la   char,curpos_string
+          st   char,arg2p(sp)
+          la   char,pos_struc_ptr(ls)
+          st   char,arg3p(sp)
+          la   char,code(ls)
+          st   char,arg4p(sp)
+          lhi  char,20
+          st   char,alist_size(sp)
+          la   ap,alist(sp)
+
+          save
+          bal  link,iocs$order
+*
+          lhi  char,c'cl'                    clear the line too
+          sth  char,dispop(ls)
+          bal  link,iocs$order
+*
+          lr   char,type                     calculate line size
+          shi  char,io_buffer(sp)
+          st   char,io_buffer_len(sp)
+          la   char,io_buffer_ptr(sp)        set up for call to put_chars
+          st   char,arg2p(sp)
+          la   char,io_buffer_len(sp)
+          st   char,arg3p(sp)
+          bal  link,iocs$put_chars
+          restore
+
+popj      restore
+          br   link
+
+real_get_hpos  equ  *
+          save
+          l    source,op1(ops)
+          l    index,op2(ops)
+          bal  link,$getr_init
+gh.back_loop   equ  *
+          balr link,get
+          b    gh.start_here
+          clhi char,13
+          bnes gh.back_loop
+          make_virtual_bufptr index,source
+gh.start_here  equ  *
+          ais  index,1                  skip the CR.
+          l    t1,op2(ops)
+          make_absolute_bufptr     t1,source
+          st   t1,save.index
+          l    source,op1(ops)
+          lis  colno,1
+          bal  link,$get_init
+
+gh.find_pos    equ  *
+          cl   index,save.index
+          bnls gh.done
+          bal  link,assemble_char
+          lr   char,char
+          bnms gh.find_pos
+gh.done   lr   rv,colno
+          b    popj
+
+real_print     equ  *
+          st   rv,save.index            flag saying whether to do a cl
+          save
+          l    rv,linel_ptr(ls)
+          l    temp,variable.value(rv)
+          sth  temp,linel
+
+          l    source,op1(ops)
+          lis  index,0                       start at the beginning
+          bal  link,$get_init
+          l    colno,op2(ops)
+          l    temp,op3(ops)
+          st   temp,save.line
+print.line_loop     equ  *
+          l    temp,save.line
+          bal  link,position                 go there
+
+          la   put_ptr,io_buffer(sp)
+print.loop     equ  *
+          bal  link,assemble_char
+          lr   char,char
+          bnms print.check_endings
+          lis  source,0
+          b    print.put
+print.check_endings equ  *
+          clhi char,x'0d'
+          be   print.put
+*         clhi char,x'0a'
+*         be   print.put
+          clh  colno,linel
+          bls  print.stuff_it
+          stb  char,0(put_ptr)
+          ais  put_ptr,1
+          lis  colno,1
+          b    print.put
+
+print.stuff_it equ  *
+          stb  char,0(put_ptr)
+          ais  put_ptr,1
+          b    print.loop
+
+print.put l    temp,op4(ops)            do more_processing?
+          bz   print.real_put
+          l    temp,save.line
+          clhi temp,24
+          bl   print.real_put
+          sis  temp,1
+          bms  p.punt1
+          sbt  temp,bashed_lines
+p.punt1   la   temp,user_input(ls)
+          st   temp,arg1p(sp)
+          la   temp,io_buffer_ptr(sp)
+          st   temp,arg2p(sp)
+          la   temp,more_string
+          st   temp,io_buffer_ptr(sp)
+          la   temp,more_string_length
+          st   temp,arg3p(sp)
+          la   temp,code(ls)
+          st   temp,arg4p(sp)
+          lhi  temp,20
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          save
+          bal  link,iocs$put_chars
+          la   temp,io_buffer(sp)
+          st   temp,io_buffer_ptr(sp)
+          bal  link,$tyi                     wait for him to be ready
+          restore
+          clhi rv,x'20'                      did he type a space?
+          bne  popj                          if no then punt the rest
+          lis  temp,1
+          st   temp,save.line
+          bal  link,position
+
+print.real_put equ  *
+          l    temp,save.line
+          sis  temp,1
+          bms  p.punt
+          sbt  temp,bashed_lines
+
+p.punt    la   temp,user_output(ls)
+          st   temp,arg1p(sp)
+          la   temp,io_buffer_ptr(sp)
+          st   temp,arg2p(sp)
+          la   temp,io_buffer_len(sp)
+          st   temp,arg3p(sp)
+          la   temp,code(ls)
+          st   temp,arg4p(sp)
+          lhi  temp,20
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          shi  put_ptr,io_buffer(sp)    calculate length
+          st   put_ptr,io_buffer_len(sp)
+          save
+          bal  link,iocs$put_chars
+          restore
+          l    temp,save.line
+          ais  temp,1                   next line
+          st   temp,save.line
+          lr   source,source
+          bnz  print.line_loop          not done yet
+          lis  rv,0
+          b    popj
+
+          align     4
+more_string    dc   c'--more--'
+more_string_length  dac  8
+
+position  equ  *                             x-cord in colno, y-cord in temp
+          lr   colno,colno
+          bz   p.nc
+          lr   temp,temp
+          bzs  p.co
+          lhi  rv,c'xy'                 position to right place
+          sth  rv,dispop(ls)
+          sth  colno,x_cord(ls)
+          sth  temp,y_cord(ls)
+          b    p.doit
+
+p.co      lhi  rv,c'sc'
+          sth  rv,dispop(ls)
+          sth  colno,x_cord(ls)
+          bs   p.doit
+
+p.nc      lr   temp,temp
+          bzr  link                     no positioning to do.
+          lhi  rv,c'sl'
+          sth  rv,dispop(ls)
+          sth  temp,x_cord(ls)
+
+p.doit    la   char,user_output(ls)     setup for call to order
+          st   char,arg1p(sp)
+          la   char,curpos_string
+          st   char,arg2p(sp)
+          la   char,pos_struc_ptr(ls)
+          st   char,arg3p(sp)
+          la   char,code(ls)
+          st   char,arg4p(sp)
+          lhi  char,20
+          st   char,alist_size(sp)
+          la   ap,alist(sp)
+
+          save
+          bal  link,iocs$order
+          l    temp,save.index
+          bzs  posn.no_clear
+          lhi  temp,c'cl'
+          sth  temp,dispop(ls)
+          bal  link,iocs$order
+posn.no_clear  equ  *
+          restore
+          br   link
+
+size_table     equ  *
+          dc   2,2,2,2,2,2,2,0,-1,0,2,2,2,0,2,2
+          dc   2,2,2,2,2,2,2,2,2,2,2,1,2,2,2,2
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0
+
+current_screen_string    dc   14,c'current_screen'
+
+          pc   7
+
+curpos_string  dc   c'cur_pos '
+
+          align 4
+bashed_lines   dac  0
+
+linel          dc   80
+
+          align 4
+
+save.count     dac  0
+save.stack     dac  0
+save.screen    dac  0
+save.line      dac  0
+save.index     dac  0
+save.colno     dac  0
+
+          end
+^L

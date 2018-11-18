@@ -1,0 +1,499 @@
+
+
+     instruction    push
+          l    rv,op1(ops)
+          br   link
+
+     instruction    pop
+          sis  stack,4
+          l    rv,0(stack)
+          l    t1,op1(ops)              operand is a ptr
+          st   rv,0(t1)
+          br   link
+
+     instruction    discard
+          sis  stack,4
+          br   link
+
+     instruction    squish
+          l    t1,op1(ops)
+          slls t1,2                     make into full word ptr
+          l    t3,-4(stack,0)           get top value to save
+          sr   stack,t1
+          st   t3,-4(stack,0)           restore top value
+          br   link
+
+fun_vbl   equ  first_free
+new_pc    equ  first_free+1
+
+     instruction    call_vbl
+     instruction    call
+          l    t1,state.pc.buf               save the state
+          l    t2,state.pc.loc
+          l    t3,op1(ops)                   get the vbl containing fun to call
+          l    t3,variable.value(t3)
+          lr   temp,t3
+          srl  temp,28
+          clhi temp,function_type
+          bes  call.got_fun
+          bal  link,error
+error15   equ  *
+call.got_fun   equ  *
+          change_pc t3,function
+          st   t1,frame.saved_pc.buf(stack)
+          st   t2,frame.saved_pc.loc(stack)
+          l    temp,state.sb
+          st   temp,frame.saved_sb(stack)
+          st   stack,frame.saved_sp(stack)
+          l    temp,state.ip
+          st   temp,frame.saved_ip(stack)
+          l    temp,op2(ops)
+          sth  temp,frame.num_args(stack)
+          lhl  temp,saved_opcode(sp)
+          sth  temp,frame.flag_bits(stack)        tels whether to push result
+          lis  temp,0
+          st   temp,frame.handlers(stack)
+          sth  temp,frame.num_bound(stack)
+
+          l    t1,op1(ops)                        get vbl which has the function
+          l    t3,variable.name(t1)
+          st   t3,frame.name_of_function(stack)
+          l    t3,variable.value(t1)              get function
+          l    temp,function.vbl_tab(t3)
+          st   temp,state.ip
+
+          l    t1,state.pc.buf
+          l    t1,buffer.base(t1)
+          l    t2,state.pc.loc
+          lh   t4,0(t1,t2)                        first HW is num_temps
+          sth  t4,frame.num_temps(stack)
+          ais  t2,2
+          st   t2,state.pc.loc                    next opcode is here
+          st   stack,state.sb                     make it stack_base
+          slls t4,2
+          ahi  stack,frame_size(t4)     bump by frame size + number of temps
+          st   stack,state.sp           make new top of stack ptr
+          br   link
+
+     instruction    return
+          l    t1,state.sb              get stack_base
+          lh   t2,frame.num_temps(t1)   need to find bound vbls
+          slls t2,2
+          ahi  t2,frame.temps(t1)       t2 is ptr to bound vbls
+          lh   t3,frame.num_bound(t1)
+          mh   t3,binding_block_size
+return.unbind  equ  *
+          sis  t3,12
+          bms  return.unbound
+          l    t4,bindings.value_addr(t2,t3) gets vbl in question
+          l    temp,bindings.old_value(t2,t3)     get saved value
+          st   temp,0(t4)               restore!
+          bs   return.unbind
+return.unbound equ  *
+          l    t2,frame.saved_pc.loc(t1)
+          bz   !13+x'e4'                if last frame then really ret
+          change_pc t1,frame.saved_pc
+
+          lh   t2,frame.num_args(t1)    so we can pop our args
+          l    t3,frame.saved_ip(t1)
+          st   t3,state.ip
+          l    t3,frame.saved_sb(t1)
+          st   t3,state.sb
+          l    rv,-4(stack,0)           get return value
+          l    stack,frame.saved_sp(t1)
+          slls t2,2                     make num_args a FW ptr
+          sr   stack,t2                 form new sp
+          st   stack,state.sp
+
+*    This idea here is to inhibit pushing stuff on the stack by
+*    looking at the bit for the call instruction.
+
+          lhl  temp,frame.flag_bits(t1) get call inst
+          sth  temp,saved_opcode(sp)    make return's push bit the call's bit
+          br   link
+
+
+     instruction    num_args
+          b    error
+
+     instruction    bind
+     instruction    bind_vbl
+          l    t2,op1(ops)                   get the variable
+          la   t3,variable.value(t2)
+
+*    t2 is object
+*    t3 is addr of cell
+
+bind_reg  l    t1,state.sb                   get ptr to base of stack
+          lh   rv,frame.num_bound(t1)        and those already bound
+          mh   rv,size_of_binding_blocks     binding blocks are bigger
+          ah   rv,frame.num_temps(t1)        offset by temps
+          slls rv,2
+          ahi  rv,frame.temps(t1)
+          st   t2,bindings.variable(rv)      save the object
+          st   t3,bindings.value_addr(rv)    save place where value is
+          l    temp,0(t3)
+          st   temp,bindings.old_value(rv)   and the old value
+          lis  temp,1
+          ahm  temp,frame.num_bound(t1)      up the count
+          ais  stack,12
+          br   link
+
+size_of_binding_blocks   dc   3              number of full_words
+
+     instruction    bind_array_cell
+          l    t2,op1(ops)                   get the array
+          l    t1,op2(ops)                   get index to bind
+          slls t1,2
+          la   t3,array.cells(t1,t2)         this is value_addr
+          lr   t4,link                       can't do a save
+          bal  link,bind_reg                 takes the object in t2
+          l    rv,op3(ops)
+          st   rv,0(t3)                      set it
+          br   t4
+
+     instruction    bind_static
+          l    t3,op1(ops)
+          l    t2,state.ip
+          lh   temp,0(t2)
+          lr   t1,t3
+          la   t4,0(t2)            flush the type bits.
+          sr   t1,t4
+          clr  t1,temp                       is it really a static
+          bp   do_bad_type
+          lr   t4,link                       save return address
+          bal  link,bind_reg
+          br   t4
+
+     instruction    quote
+          l    rv,op1(ops)
+          br   link
+
+     instruction    eval
+          l    t1,op1(ops)
+          l    rv,variable.value(t1)
+          br   link
+
+*    This instruction sets up a handler for a particular error condition.
+*    The code to handle the error follows the handle instruction and
+*    the address of the code to be executed under the auspicouses of the
+*    handler is the second argument.  The error name is the first argument.
+
+*         Code for handling typical error:
+*    (handle "srchfail" search_routine)
+*    (foo bar baz)            ; code to be executed when error occurs.
+*    (goto cleanup)
+*search_routine
+*    (baz bar foo)            ;code executed under error handler
+*cleanup
+*    (revert)
+
+     instruction    handle
+          lr   t3,link                            save the return addr
+          l    t1,state.sb                        get frame ptr
+          l    temp,frame.handlers(t1)
+          st   temp,handler.next(stack)           chain all the handlers together
+          st   stack,frame.handlers(t1)           thread it on
+          lr   t1,stack
+          ahi  t1,handler_size
+          st   t1,handler.contour(stack)          save contour pointer
+          l    source,op1(ops)                    get string and copy it.
+          li   char,x'20202020'
+          st   char,handler.error_name(stack)
+          st   char,handler.error_name+4(stack)
+          lis  index,0
+          bal  link,get_init
+          la   t2,handler.error_name(stack)
+handle.copy    equ  *
+          balr link,get
+          b    handle.copy_done
+          stb  char,0(t2)
+          ais  t2,1
+          bs   handle.copy
+handle.copy_done    equ  *
+          l    temp,state.pc.buf                  go here when error occurs
+          st   temp,handler.addr.buf(stack)
+          l    temp,state.pc.loc
+          st   temp,handler.addr.loc(stack)
+          l    temp,op2(ops)
+          branch    temp,t1
+          ahi  stack,handler_size
+          br   t3
+
+*    revert simply deactivates the top handler
+
+     instruction    revert
+          l    t1,state.sb
+          l    t2,frame.handlers(t1)
+          l    t3,handler.next(t2)
+          st   t3,frame.handlers(t1)         unthread handler
+          l    t3,handler.contour(t2)        reset the stack
+          shi  t3,handler_size
+          clhi stack,handler_size(t3)        anything above handler?
+          bes  revert.move_value
+          l    temp,-4(stack,0)
+          st   temp,0(t3)                    move top of stack down
+          ais  t3,4
+revert.move_value   equ  *
+          lr   stack,t3                      pop off handler
+          br   link
+
+*    This code just signals a condition.
+
+     instruction    signal
+          l    source,op1(ops)
+          lis  index,0
+          bal  link,get_init
+          lr   t1,stack
+          ais  stack,8
+          li   temp,x'20202020'
+          st   temp,0(t1)
+          st   temp,4(t1)
+          lr   put_ptr,t1
+signal.loop    equ  *
+          balr link,get
+          b    error.signal_entry
+          stb  char,0(put_ptr)
+          ais  put_ptr,1
+          bs   signal.loop
+
+*         Flow control
+
+     instruction    restart_at
+          l    temp,op1(ops)
+          ni   temp,x'0000ffff'
+          st   temp,restart.loc
+          l    temp,state.pc.buf
+          st   temp,restart.buf
+          l    temp,state.ip
+          st   temp,restart.vbl_tab
+          br   link
+
+     instruction    goto
+          l    temp,op1(ops)
+          branch    temp,t1
+*         st   temp,state.pc.loc
+          br   link
+
+     instruction    bnoerr
+          l    t1,error_register
+          lis  temp,0
+          st   temp,error_register
+          lr   t1,t1
+          bmr  link
+          l    t1,op1(ops)
+          branch    t1,t2
+*         st   t1,state.pc.loc
+          br   link
+
+     instruction    berr
+          l    temp,error_register
+          bzr  link
+          lis  temp,0
+          st   temp,error_register
+          l    t1,op1(ops)
+          branch    t1,t2
+          br   link
+
+string_types   dc   x'7020'
+
+t_value   equ  x'0b02fff1'
+nil_value equ  x'0b02fff0'
+
+     instruction    t
+          li   rv,t_value
+          br   link
+
+     instruction    nil
+          li   rv,nil_value
+          br   link
+
+     instruction    ift
+          li   temp,nil_value
+          cl   temp,op1(ops)
+          ber  link
+
+comp.branch    equ  *
+          l    temp,op2(ops)
+          branch    temp,t1
+          br   link
+
+     instruction    ifnil
+          li   temp,nil_value
+          cl   temp,op1(ops)
+          bner link
+          b    comp.branch
+
+     instruction    eq
+          l    temp,op1(ops)
+          lr   t1,temp
+          srl  t1,28
+          tbt  t1,string_types
+          bnzs eq.string
+          l    t1,op2(ops)
+          srl  t1,28
+          tbt  t1,string_types
+          bnzs eq.string
+          cl   temp,op2(ops)
+          be   t
+          b    nil
+
+eq.string save
+          l    source,op2(ops)
+          lis  index,0
+eq.looking_atp_entry     equ  *
+          bal  link,get_init
+          save_sv   haystack
+          l    source,op1(ops)
+          lis  index,0
+          bal  link,get_init
+
+eq.loop   balr link,get
+          lhi  link,0                        no-op
+          lr   t1,char
+          save_sv   needle
+          load_sv   haystack
+          balr link,get
+          lhi  link,0                        no-op
+          clr  char,t1
+          bne  nil_pop
+          clhi char,-1
+          be   t_pop                         done
+          save_sv   haystack
+          load_sv   needle
+          b    eq.loop
+
+nil_pop   li   rv,nil_value
+          b    popj
+t_pop     li   rv,t_value
+          b    popj
+
+     instruction    not
+          l    temp,op1(ops)
+          cli  temp,nil_value
+          be   t
+          b    nil
+
+     instruction    gp
+          l    temp,op1(ops)
+          lr   t1,temp
+          srl  t1,28
+          tbt  t1,string_types
+          bnzs gp.string
+          l    t1,op2(ops)
+          srl  t1,28
+          tbt  t1,string_types
+          bnzs gp.string
+          c    temp,op2(ops)
+          bp   t
+          b    nil
+
+gp.string save
+          l    source,op2(ops)
+          lis  index,0
+          bal  link,get_init
+          save_sv   haystack
+          l    source,op1(ops)
+          lis  index,0
+          bal  link,get_init
+
+gp.loop   balr link,get
+          b    nil_pop
+          lr   t1,char
+          save_sv   needle
+          load_sv   haystack
+          balr link,get
+          b    t_pop
+          clr  t1,char
+          bp   t_pop
+          bl   nil_pop
+
+*    There equal so far so keep looking
+
+          save_sv   haystack
+          load_sv   needle
+          b    gp.loop
+
+     instruction    gep
+          save
+          bal  link,lp             >= is ^<
+          st   rv,op1(ops)
+          restore
+          b    not
+
+     instruction    lp
+          l    temp,op1(ops)       (< a b) = (> b a)
+          l    t1,op2(ops)
+          st   t1,op1(ops)
+          st   temp,op2(ops)
+          b    gp
+
+     instruction    lep
+          save
+          bal  link,gp             <= is equivalent to ^>
+          st   rv,op1(ops)
+          restore
+          b    not
+
+     instruction    looking_atp
+          save
+          l    source,op2(ops)          get buffer to examine
+          l    index,buffer.location(source)
+          a    index,op3(ops)           add in offset
+          bnms lap.check_length         normalize
+          lis  index,0
+          b    lap.eqp
+lap.check_length    equ  *
+          bal  link,get_length
+          cr   index,rv
+          bnm  nil_pop                  error!
+lap.eqp   equ  *
+          bal  link,get_init
+          save_sv   haystack
+          l    source,op1(ops)          get string to check for
+          lis  index,0
+          bal  link,get_init
+
+lap.loop  balr link,get
+          b    t_pop                    win!
+          lr   t1,char
+          save_sv   needle
+          load_sv   haystack
+          balr link,get
+          b    nil_pop                  ran out of chars to check
+          clr  char,t1
+          bne  nil_pop
+          save_sv   haystack
+          load_sv   needle
+          b    lap.loop
+
+     instruction    modifiedp
+          l    source,op1(ops)          get buffer to check
+          l    rv,buffer.start_mod(source)
+          l    temp,marker.mv(rv)
+          l    rv,buffer.end_mod(source)
+          cl   temp,marker.mv(rv)
+          bp   nil
+          b    t
+
+     instruction    functionp
+          l    t1,op1(ops)
+          srl  t1,28
+          clhi t1,function_type
+          be   t
+          b    nil
+
+     instruction    stringp
+          l    t1,op1(ops)
+          srl  t1,28
+          clhi t1,string_type
+          be   t
+          b    nil
+
+     instruction    variablep
+          l    t1,op1(ops)
+          srl  t1,28
+          clhi t1,variable_type
+          be   t
+          b    nil
+^L

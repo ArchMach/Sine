@@ -1,0 +1,75 @@
+
+*
+*  This program takes two segments in two address_spaces
+*  and switches them.  It takes two full words as arguments.
+*  The full word is the OR of the segment base and the ptr
+*  to the AS.
+*
+ pc 0
+ org 0
+as equ *
+as.next ds 4
+as.sdb ds 4*16
+*
+ org 0
+saved_as equ *
+saved_as.next ds 4
+saved_as.name ds 4
+saved_as.sdb ds 64
+saved_as.names ds 4
+saved_as.lot ds 64
+
+ incl shuffle
+ pc 1
+*
+ entry out
+out .ent 0
+ l 1,4(15)
+ l 1,0(1) get ptr to incore segment
+ l 2,8(15)
+ l 2,0(2) get place to put it
+ l 3,cur_task
+ l 3,pa_address_space(3)
+ srls 1,14 turn segno into AS offset of sdb and acl word
+ nhi 1,x'fc'
+ lr 4,2
+ ni 4,x'ffff' get ptr to AS
+ oi 4,!13 this is in a saved AS
+ srls 2,14 turn segno into AS offset of sdb and acl word
+ nhi 2,x'fc'
+ l 5,as.sdb(1,3) Perform the swap...
+ l 6,saved_as.sdb(2,4)
+ bnzs * barf out badly if bashing a slot that's in use.
+ lis 0,0
+ st 0,as.sdb(1,3) keep user count right
+ st 5,saved_as.sdb(2,4)
+ svc 12,x'0c30' reset the mac registers
+ .rtn
+
+ entry in
+in .ent 0
+ l 1,4(15)
+ l 1,0(1) get ptr to swapped out segment
+ l 2,8(15)
+ l 2,0(2) get place to put it
+ l 4,cur_task
+ l 4,pa_address_space(4)
+ srls 2,14 turn segno into AS offset of sdb and acl word
+ nhi 2,x'fc'
+ lr 3,1
+ ni 3,x'ffff' get ptr to AS
+ oi 3,!13 this is in a saved AS
+ srls 1,14 turn segno into AS offset of sdb and acl word
+ nhi 1,x'fc'
+ l 5,saved_as.sdb(1,3) Perform the swap...
+ l 6,as.sdb(2,4)
+ bnzs * barf out badly if bashing a slot that's in use.
+ lis 0,0
+ st 0,saved_as.sdb(1,3) keep user count right
+ st 5,as.sdb(2,4)
+ svc 12,x'0c30' reset the mac registers
+ .rtn
+
+ end
+
+^L

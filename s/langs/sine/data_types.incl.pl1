@@ -1,0 +1,121 @@
+
+/*
+Buffer: An extensible and modifiable text string.
+*/
+
+declare
+     1 buffer based,          /* type = 1 */
+          2 next pointer,
+          2 base pointer,
+          2 real_hole ptr,    /* AS_ptr | seg_ptr */
+          2 location fixed(31),
+          2 gap_start fixed(31),
+          2 gap_end fixed(31),
+          2 top fixed(31),
+          2 start_mod ptr,
+          2 end_mod ptr,
+          2 marker_chain ptr,
+          2 flags bit(24),
+          2 file_suffix char(1);
+/*
+String: An extensible text string.
+*/
+
+declare
+     1 string based,          /* type = 2 */
+          2 length fixed,
+          2 text char(1);
+
+/*
+Window: A virtual buffer or string
+*/
+
+declare
+     1 window based,          /* type = 3 */
+          2 start ptr,
+          2 stop ptr,
+          2 real_text pointer;
+
+/*
+Cons: A two object data container.
+*/
+
+declare
+     1 cons based,            /* type = 4 */
+          2 car pointer,
+          2 cdr pointer;
+
+/*
+Variable: A data container with a name.
+*/
+
+declare
+     1 variable based,        /* type = 5 */
+          2 next pointer,
+          2 name pointer,
+          2 value pointer;
+
+/*
+Function: A cons with the car a pc and the cdr a ptr tp the linkage section.
+*/
+
+declare
+     1 function based,        /* type = 6 */
+          2 buf ptr,
+          2 loc fixed(31),
+          2 vbl_tab pointer;
+
+/*
+Marker: A pointer into a buffer which is attached to the text.
+*/
+
+declare
+     1 marker based,          /* type = 7 */
+          2 next ptr,
+          2 marker_value fixed(31);
+
+/*
+Screen: This is the data kept around for each displayable window.
+*/
+
+declare
+     1 screen based,          /* type = 8 */
+          2 next ptr,
+          2 buffer ptr,
+          2 lise_on_screen fixed,
+          2 last_line fixed,
+          2 just char(20),
+          2 start(25) ptr;
+
+/*
+Array: This is a standard array type header.
+*/
+
+declare
+     1 array based,           /* type = 9 */
+          2 type fixed(31),
+          2 size fixed(31),        /* number of cells if <type> bits each */
+          2 cells (1) ptr;         /* the cells themselves */
+/*
+Gnirt: This is an extensible.  It can be inserted into and deleted from
+but the current location is always at the end.
+*/
+
+declare
+     1 gnirt based,           /* type = 10 */
+          2 max_length fixed,      /* size of this block: can grow to this
+                                      size before reallocation is necessary */
+          2 real_length fixed,
+          2 real_text ptr;         /* where the text really is */
+
+/*
+Vbl_tab: this is a hack for the garbage collector.
+*/
+
+declare
+     1 vbl_tab based,         /* type = 11 */
+          2 num_static fixed,
+          2 num fixed,
+          2 vbls (1) ptr;
+
+^L

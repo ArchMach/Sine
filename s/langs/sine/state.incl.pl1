@@ -1,0 +1,11 @@
+
+ dcl 1 state,
+          2 pc,
+               3 buf ptr,
+               3 loc fixed(31),
+          2 sb ptr,
+          2 sp ptr,
+          2 ip ptr,
+     fsb fixed(31) defined sb,
+     fsp fixed(31) defined sp;
+^L

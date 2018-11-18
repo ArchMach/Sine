@@ -1,0 +1,49 @@
+
+bsysin\hk
+blisp\hki(setq opcode_table '(
+\
+bpl1\hkiopname
+\
+0pnum\
+bop\
+hk:i@
+bopname\hki^X1\ bopcode\hki^X1popcode\\\\mopcode\
+0pnum_args\
+bop1\hki^X1\j:<s0\z-2;oget_second\> qnum_args\+1pnum_args\
+ |get_second| bop2\hki^X1\j:<s0\z-2;oget_third\> qnum_args\+1pnum_args\
+  |get_third| bop3\hki^X1\j:<s0\z-2;oget_fourth\> qnum_args\+1pnum_args\
+   |get_fourth| bop4\hki^X1\j:<s0\z-2;ogot_all_args\> qnum_args\+1pnum_args\
+|got_all_args|
+btype\hki^X1\
+          |* now all the args are parsed *|
+
+|* First add to the sysin incl file *|
+bsysin\zji org \qopcode\*12^ii+op_tab_origin
+ dc ^Dop1\,^Dop2\,^Dop3\,^Dop4\,^Dtype\,^Dopname\
+\
+|* Next the lisp stuff *|
+     blisp\
+zji(^Dopname\ \qopcode\+8192^ii . \qnum_args\^ii)
+\
+|* Last the pl1 error incl *|
+qnum\+1pnum\
+bpl1\
+jqopcode\^ii,
+\sopname\li"^Dopname\",
+\
+@
+emopcodes\
+
+bsysin\eoopcodes.incl.sysin\
+blisp\zji))
+\eoopcodes.lisp\
+bpl1\
+jidcl numops fixed init (\qnum\^ii);
+dcl opcodes (\qnum\^ii) fixed static init (
+\
+sopname\0lr-di);\lidcl \lri (\qnum\^ii) char(16) static init (
+\zj-llr-di);\
+eoopcodes.incl.pl1\
+
+ob (9.775 5 0.75) >s>langs>sine
+

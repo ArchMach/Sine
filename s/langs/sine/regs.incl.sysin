@@ -1,0 +1,70 @@
+
+*    So that there is some hope of winnage I will try to stick to
+*    the following register conventions.
+
+*         The value returned by instructions:
+
+rv             equ  1
+
+*         Operands to instructions will be pointed to by ops
+
+ops            equ  2
+
+*         For pushing and poping regs... (way up there so it will be safe)
+
+stack          equ  11
+
+*         This means that the first free register is:
+
+first_free     equ  3
+
+*         The instruction decoder and dispatch uses the following regs.
+
+opcode         equ  first_free
+optype         equ  first_free+1
+place          equ  first_free+2
+pc             equ  first_free+3
+base_reg       equ  first_free+4
+test_mask      equ  first_free+5
+
+*         The co-routined read-from-text-object hack uses:
+
+source         equ  first_free
+text_ptr       equ  first_free+1
+get            equ  first_free+2
+index          equ  first_free+3
+type           equ  first_free+4
+char           equ  0
+
+*         For sticking things in buffers.
+
+sink           equ  first_free+5
+put_ptr        equ  first_free+6
+len            equ  first_free+7
+
+*         Update_gap's regs
+
+gstart         equ  first_free
+gsize          equ  first_free+1
+markers        equ  first_free+2
+from_ptr       equ  first_free+2
+to_ptr         equ  first_free+3
+num_ch         equ  first_free+4
+
+*         Temps:
+
+temp           equ  0
+t1             equ  10
+t2             equ  9
+t3             equ  8
+t4             equ  7
+t5             equ  6
+t6             equ  5
+
+*         The usual pl1 registers 12,13,14 and 15
+
+lp             equ  12
+sp             equ  13
+link           equ  14
+ap             equ  15
+^L

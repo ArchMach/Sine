@@ -1,0 +1,156 @@
+
+ pc 0
+ org 0
+*    buffer
+buffer_bits equ x'10000000'
+buffer_type equ 1
+buffer.next ds 4
+base equ *
+buffer.base ds 4
+buffer.real_hole ds 4
+buffer.location ds 4
+gap_start equ *
+buffer.gap_start ds 4
+gap_end equ *
+buffer.gap_end ds 4
+top equ *
+buffer.top ds 4
+buffer.start_mod ds 4
+buffer.end_mod ds 4
+marker_chain equ *
+buffer.marker_chain ds 4
+
+buffer.flags ds 4
+buffer.flags.read_only equ 0
+buffer.flags.wired equ 1
+
+buffer_size equ *
+*
+ org 0
+*    string
+string_bits equ x'20000000'
+string_type equ 2
+string.length ds 2
+string.text ds 1
+string_size equ *
+*
+ org 0
+*    window
+window_bits equ x'30000000'
+window_type equ 3
+window.start ds 4
+window.stop ds 4
+window.real_text ds 4
+window_size equ *
+*
+ org 0
+*    cons
+cons_type equ 4
+cons_bits equ x'40000000'
+cons.car ds 4
+cons.cdr ds 4
+cons_size equ *
+*
+ org 0
+*    variable
+variable_type equ 5
+variable_bits equ x'50000000'
+variable.next ds 4
+variable.name ds 4
+variable.value ds 4
+variable_size equ *
+*
+ org 0
+*    function
+function_type equ 6
+function_bits equ x'60000000'
+function.buf ds 4
+function.loc ds 4
+function.vbl_tab ds 4
+function_size equ *
+*
+ org 0
+*    marker
+marker_bits equ x'70000000'
+marker_type equ 7
+marker.next ds 4
+marker.mv ds 4
+marker_size equ *
+*
+ org 0
+*    screen
+screen_type equ 8
+screen_bits equ x'80000000'
+screen.next ds 4
+screen.buffer ds 4
+screen.line_on_screen ds 2
+screen.last_line ds 2
+screen.first_mod ds 2
+screen.displayed ds 2
+screen.current_line ds 2
+screen.pad ds 2
+screen.force_display ds 4
+screen.emptyp ds 4
+screen.last_top ds 4
+screen_size equ *
+screen.start ds 4 n lines start here.
+screen.linel ds 2
+screen.scrap ds 2
+line_array_size equ 8
+line_array_shift equ 3
+
+array_bits     equ  x'90000000'
+array_type     equ  9
+               org  0
+array          equ  *
+array.type     ds   4
+array.size     ds   4
+array.cells    equ  *
+array_size     equ  *
+
+ org 0
+gnirt_bits          equ  x'a0000000'
+gnirt_type          equ  10
+gnirt.max_length    ds   2
+gnirt.real_length   ds   2
+gnirt.text_ptr      ds   4
+gnirt_size          equ  *
+
+ org 0
+vbl_tab_bits        equ  x'b0000000'
+vbl_tab_type        equ  11
+vbl_tab.num         ds   4
+vbl_tab.vbls        equ  *
+
+ org 0
+frame equ *
+frame.saved_pc.buf ds 4
+frame.saved_pc.loc ds 4
+frame.saved_sb ds 4
+frame.saved_sp ds 4
+frame.saved_ip ds 4
+frame.name_of_function ds 4
+frame.handlers ds 4
+frame.flag_bits ds 2
+frame.num_args ds 2
+frame.num_temps ds 2
+frame.num_bound ds 2
+frame.temps equ *
+frame_size equ *
+
+     org  0
+bindings equ *
+bindings.variable ds 4
+bindings.value_addr ds 4
+bindings.old_value ds 4
+
+ org 0
+handler.next ds 4
+handler.addr.buf ds 4
+handler.addr.loc ds 4
+handler.contour ds 4
+handler.error_name ds 8
+handler_size equ *
+
+ pure
+^L

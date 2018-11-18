@@ -1,0 +1,24 @@
+
+^Dstart_of_statement: Goes to the beginning of the current statement.
+
+^Dpl1_indent_line: Indents the current line appropriately
+depending on:
+               1) The previous line.
+               2) The flags set in the options:: clause.
+               3) The current line.
+
+^Dnext_non_white: Moves to the next program character (comments
+are skipped).
+
+^Dbalance_forward: At a do, proc or begin statement scans forward
+for the balancing end statement.
+
+^Dbalance_backward: At an end statement, scans backwards for a
+matching do, proc or begin statement.
+
+^Dgoto_line_n: Goes to the line specified by the argument.
+
+^Dcompile_pl1: Writes out and recompiles the current buffer.
+If you blow out use "pi" to recover.
+
+^L

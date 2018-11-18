@@ -1,0 +1,40 @@
+
+*
+*  assignment substr which does it right
+*
+*  transfer characters (source_ptr,desination_ptr,num_chars)
+*
+ entry subst
+subst bal 5,!15+x'e0'
+ dc 0,0,0
+ l 11,4(15)
+ l 10,0(11)
+ l 5,8(15)
+ l 11,0(5)
+ l 5,12(15)
+ lhl 12,0(5)
+*
+ lis 5,1 ammount to increment by (1 or -1)
+ lr 6,10
+ ar 6,12 place to stop
+ clr 11,10 go forwards or backwards?
+ bls trans go forward
+ be !15+x'e4'
+*
+ lr 6,10
+ sis 6,1
+ lcs 5,1
+ ar 10,12 start char transfer at ends of strings
+ sis 10,1
+ ar 11,12
+ sis 11,1
+*
+trans clr 10,6 are we done yet?
+ be !15+x'e4' if so return.
+ lb 1,0(10) else transfer a character
+ stb 1,0(11)
+ ar 10,5
+ ar 11,5
+ b trans
+ end
+^L

@@ -1,0 +1,105 @@
+
+init:     proc(state,string_space_ptr);
+
+%include state;
+%include stack;
+%include data_types;
+
+ dcl scs$get_uname entry returns (char(8) varying);
+ dcl com_error entry options(variable);
+ dcl hcs$initiate entry (char(168)vary,char(32)vary,pointer,fixed(31));
+ dcl hcs$append_seg entry (char(168)vary, char(32) vary, fixed(31));
+ dcl hcs$terminate entry (pointer);
+ dcl hcs$truncate_file entry (char(168)vary, char(32)vary, fixed, fixed(31));
+
+ dcl uname char(8) varying;
+ dcl ename char(32) varying;
+ dcl dname char(168) varying;
+ dcl code fixed(31);
+
+ dcl stack_ptr pointer;
+ dcl string_space_ptr pointer;
+
+ dcl size builtin;
+
+     uname = scs$get_uname();
+     dname = ">process_dir>sine_segments";
+     ename = uname || ".sine_stack";
+     call hcs$append_seg (dname,ename,code);
+     call hcs$truncate_file (dname,ename,0,code);
+     call hcs$initiate(dname,ename,stack_ptr,code);
+     if code < 0 then do;
+          call com_error(code,"sine","can't get stack segment");
+          return;
+          end;
+
+     ename = uname || ".sine_string_space";
+     call hcs$append_seg (dname,ename,code);
+     call hcs$truncate_file (dname,ename,0,code);
+     call hcs$initiate (dname,ename,string_space_ptr,code);
+     if code < 0 then do;
+          call com_error (code,"sine","can't get string space");
+          return;
+          end;
+
+     pc.buf = null();
+     pc.loc = 0;
+     sb = stack_ptr;
+     sp = addrel(stack_ptr,size(frame)-8);  /* no temps yet */
+     ip = null();
+     frame.saved_pc.buf = null();
+     frame.saved_pc.loc = 0;
+     frame.saved_sb = null();
+     frame.saved_sp = null();
+     frame.saved_ip = null();
+     frame.handlers = null();
+     frame.num_args = 0;
+     frame.num_temps = 0;
+     frame.num_bound = 0;
+     return;
+
+haf: entry;              /* this Hacks Active Functions */
+
+dcl scs$get_arg_count entry (fixed);
+dcl scs$get_arg_info entry (fixed,fixed,fixed,ptr);
+dcl $get_code_ptr entry returns(ptr);
+dcl $pl1_allocate entry (fixed(31)) returns(ptr);
+
+dcl ssp ptr;
+dcl slen fixed(31);
+dcl 1 sine_string based (ssp),
+          2 len fixed,
+          2 chars char(1);
+
+dcl ap ptr;
+dcl al fixed;
+dcl arg char(al) based(ap);
+dcl at fixed;
+dcl nargs fixed;
+dcl i fixed;
+dcl j fixed;
+dcl bb32 bit(32) based;
+
+     call scs$get_arg_count (nargs);
+     slen = -1;
+     do i = 1 to nargs;
+          call scs$get_arg_info(i,at,al,ap);
+          slen = slen + al + 1;
+          end;
+     if slen = -1 then slen = 0;
+     ssp = $pl1_allocate (slen+2);
+     len = slen;
+     j = 1;
+     do i = 1 to nargs;
+          call scs$get_arg_info(i,at,al,ap);
+          substr(chars,j,al) = arg;
+          j = j + al + 1;
+          if i = nargs then leave;
+          substr(chars,j-1,1) = " ";
+          end;
+     ap = $get_code_ptr();
+     ap->bb32 = "20000000"b4 | unspec(ssp);
+     return;
+
+end;
+^L

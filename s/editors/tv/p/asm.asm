@@ -1,0 +1,26 @@
+
+(defun parse_fun (&aux eof)
+     (store (over_s_expr_fa source) eof)
+     (add_to_loc source 1)
+     (cond ((not (eq (get_next_sexp eof) "defun")) (barf))
+           (t (store (get_next_sexp eof) fun_name)
+              (parse_arg_list (get_next_sexp eof)))
+     (skip_over_whitespace)
+     (cond ((looking_at "[") (parse_call eof))
+           ((t) (ifnil (store (get_next_sexp eof) form) leave)
+                (intern_label form pc))))
+
+(defun parse_call (eof)
+     (store (over_s_expr_fa source) end_place)
+     (add_to_loc source 1)
+     (store (lookup (store (get_next_sexp end_place) function)) type)
+     (store (add pc 1) pc)
+loop (ifnil (store (get_next_sexp end_place) form) leave)
+     (parse_form type form)
+     (store (add pc 1) pc)
+     (goto loop)
+leave)
+
+(defun parse_form (type form)
+     (cond ((looking_at "[")
+^L

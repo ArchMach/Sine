@@ -1,0 +1,6 @@
+
+^Dindent_for_lisp: indents an S-expression
+
+^Dlisp_newline: puts you on a new line properly indented
+
+^L

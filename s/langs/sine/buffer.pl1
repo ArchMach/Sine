@@ -1,0 +1,73 @@
+
+pl1_make_buffer:    proc(buf,buf_ptr);
+
+%include address_space;
+%include data_types;
+
+ dcl buf ptr;
+ dcl buf_ptr ptr;
+
+ dcl hcs$append_seg entry (char(168)varying,char(32)varying,fixed(31));
+ dcl hcs$truncate_file entry(char(168)vary,char(32)vary,fixed,fixed(31));
+ dcl hcs$initiate entry(char(168)vary,char(32)vary,ptr,fixed(31));
+ dcl scs$get_uname entry returns(char(8)varying);
+ dcl scs$break_entry entry;
+ dcl com_error entry options(variable);
+ dcl $swapify entry (ptr);
+ dcl $pl1_allocate entry (fixed(31),ptr);
+
+ dcl dname char(168)varying static init(">process_dir>sine_segments");
+ dcl ename char(32) varying;
+ dcl code fixed(31);
+ dcl uname char(8) varying;
+ dcl null_name char(32) varying static init("");
+ dcl bp ptr;
+ dcl tp ptr;
+
+ dcl size builtin;
+
+ dcl 1 bufname_suffix unaligned static,
+          2 fixed_part char(13) init(".sine_buffer."),
+          2 varying_part fixed bin(7) init(96);
+ dcl suffix char(14) defined bufname_suffix;
+ dcl suffix_char char(1) defined varying_part;
+
+     call $pl1_allocate(size(buffer),bp);
+/* allocate buffer in(string_space) set(bp); */
+     bp->buffer.next = null();
+     bp->buffer.real_hole = null();
+     bp->buffer.location = 0;
+     bp->buffer.gap_start = 0;
+     bp->buffer.gap_end = 500;
+     bp->buffer.top = 500;
+     bp->buffer.start_mod = null();
+     bp->buffer.end_mod = null();
+     bp->buffer.marker_chain = null();
+     bp->buffer.flags = "0"b;
+     unspec(buf) = unspec(bp) | "10000000"b4;
+
+     if buf_ptr = null()
+          then do;
+               uname = scs$get_uname ();
+               varying_part = varying_part + 1;
+               ename = uname || suffix;
+               bp->buffer.file_suffix = suffix_char;
+               call hcs$append_seg (dname,ename,code);
+               call hcs$truncate_file (dname,ename,0,code);
+               call hcs$initiate(dname,ename,tp,code);
+               if code < 0 then do;  /* address_space full (?) */
+                    call com_error(code,"make_buffer");
+                    call scs$break_entry;
+                    return;
+                    end;
+               end;
+          else do;
+               bp->buffer.file_suffix = "\@";
+               tp = buf_ptr;
+               end;
+     bp->buffer.base = tp;
+     call $swapify(bp);
+     return;
+
+end;
+^L

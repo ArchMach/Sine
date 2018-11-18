@@ -1,0 +1,55 @@
+
+*    all this code relies on the fact that ds's are inited to zero
+
+state          equ  *
+state.pc.buf   ds   4
+state.pc.loc   ds   4
+state.sb       ds   4
+state.sp       ds   4
+state.ip       ds   4
+
+code           ds   4
+user_input     ds   4
+user_output    ds   4
+string_space   ds   4
+variable_chain ds   4
+top_of_heap    ds   4
+number_of_allocates ds   4
+time_to_gc     ds   4
+get.stop       ds   4
+getr.stop      ds   4
+
+insert.start   ds   4
+insert.stop    ds   4
+
+breakp         ds   2
+break_enabled  ds   2
+contour_ptr    ds   4
+
+error_register ds   4
+
+dscrs          equ  *                   build descriptors here
+search_save_area_haystack     ds   20
+search_save_area_needle       ds   20
+
+restart.buf    ds   4
+restart.loc    ds   4
+restart.vbl_tab     ds   4
+
+in.save.flag   ds   4
+
+linel_ptr      ds   4
+current_screen_ptr  ds   4
+screen_chain   ds   4
+
+num_of_lines   equ  25
+lines.screen   ds   num_of_lines*4
+
+pos_struc_ptr  dac  0
+pos_struc      equ  *
+dispop         dc   c'xy'
+x_cord         dc   0
+y_cord         dc   0
+
+inhibit_gc     dc   0
+^L

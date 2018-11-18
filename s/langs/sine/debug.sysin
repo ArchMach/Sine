@@ -1,0 +1,5 @@
+
+ entry debug
+debug dc -1
+ end
+^L

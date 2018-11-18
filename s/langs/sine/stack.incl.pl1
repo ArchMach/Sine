@@ -1,0 +1,42 @@
+
+/*
+Frame: The stuff in every stack frame.
+Arguments: These immediately preceed every stack frame.
+Bindings: These allow the values of global variables to be restored.
+Handlers: This is the list of "conditions" and places to go to handle them.
+*/
+
+declare
+     1 frame based (sb),
+          2 saved_pc,
+               3 buf ptr,
+               3 loc fixed(31),
+          2 saved_sb pointer,
+          2 saved_sp pointer,
+          2 saved_ip pointer,
+          2 name_of_function pointer,
+          2 handlers ptr,
+          2 flag_bits fixed,
+          2 num_args fixed,
+          2 num_temps fixed,
+          2 num_bound fixed,
+          2 temps (0:1) pointer;
+
+declare
+     arguments (0:1) pointer based (sb); /* Used with negative indexes */
+
+declare
+     1 bindings based,
+          2 object pointer,
+          2 value_addr ptr,
+          2 old_value pointer;
+
+declare
+     1 handlers based,
+          2 next pointer,
+          2 addr_buf pointer,
+          2 addr_loc fixed(31),
+          2 contour ptr,
+          2 name char(8);
+
+^L

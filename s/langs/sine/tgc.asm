@@ -1,0 +1,43 @@
+
+(variable foo)
+(variable a)
+(variable b)
+(variable d)
+(variable nonlocal)
+(variable current_screen)
+(variable buf)
+(variable array)
+
+(defun top_level ( &aux m s)
+     (store (make_array 32 10) array)
+;    (store (insert "foo bar" (make_gnirt)) d)
+     (as (store (make_buffer) buf) array 1)
+     (insert "this is a test" buf)
+     (store (make_screen buf 1 10) current_screen)
+     (display)
+     (store (cons 0 (insert "foo bar" (make_gnirt))) d)
+     (load "nonlocal.sine")
+
+loop (cons 1 2)
+;    (print d 1 1 0)
+;    (print (nth buf (eval_mark m buf)) 1 2 0)
+     (print (cdr d) 1 1 0)
+     (errset "foob    " ((signal "foob")) ())
+     (nonlocal)
+     (store (tyi) foo)
+     (ift (eq foo 113) return)
+     (bar foo 0)
+     (insert_ioa "^i done
+" foo (ar array 1))
+     (display)
+     (goto loop)
+return
+     (restart_at loop)
+     (return)
+     (goto loop))
+
+(defun bar (a d &aux i)
+     (for i 1 a (make_gnirt))
+;    (print_clearing "Done" 1 a 0)
+     )
+^L

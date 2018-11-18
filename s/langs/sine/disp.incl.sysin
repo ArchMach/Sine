@@ -1,0 +1,698 @@
+
+*    1 screen based,
+*         2 next ptr,              /* next screen */
+*         2 buffer ptr,            /* could be a string */
+*         2 line_on_screen fixed,  /* physical starting line */
+*         2 last_line fixed;       /* (number_of_lines - 1) * 4 */
+*         2 first_mod fixed,       /* line containing start_mod */
+*         2 displayed fixed,       /* flag set when display is started */
+*         2 force_display bit(32), /* force redisplay on these lines */
+*         2 lines(n) ptr;          /* mark for each line */
+
+*    1 lines static,
+*         2 screen(25) ptr,        /* ptr to screen this line is part of */
+*         2 next(25) ptr;          /* ptr to a list of previous screens */
+
+*         This little routine updates the display of the screen.
+
+*         It goes over each line and updates the screen that line
+*         is in.  If the point in not visible then a recenter is
+*         performed.  Otherwise the pt is fixed on the screen and
+*         the start_mod and end_mod markers are examined to determine
+*         what stuff to redisplay.  The redisplay process only up
+*         dates the line markersbut does no actual IO.  This is done
+*         in a second simple pass.  The end of the current screen
+*         is defined by a change in the window ptrs.  After all the
+*         screens are updated and redisplayed the start_mod and end_mod
+*         markers are reset to show no modification.
+
+
+line           equ  first_free+5
+screen         equ  first_free+6
+
+*    make_screen a,b,c  Takes a buffer "a" and puts it on the screen
+*    starting at physical line number "b" and in a window "c" lines long.
+
+     instruction    make_screen
+          save
+          lhi  5,screen_size
+          l    type,op3(ops)
+          slls type,2
+          ar   5,type                   room for the lines too
+          ais  5,4                      and one extra
+          bal  link,allocate
+          lr   screen,rv
+          oi   screen,screen_bits
+          l    source,op1(ops)
+          st   source,screen.buffer(screen)
+
+*         check to see if initialization is needed
+
+          l    temp,linel_ptr
+          bnz  ms.no_init
+          la   temp,linel_string
+          st   temp,op1(ops)
+          bal  link,make_variable
+          lhi  temp,80                  set up the default value
+          st   temp,variable.value(rv)
+          st   rv,linel_ptr
+          la   temp,current_screen_string
+          st   temp,op1(ops)
+          bal  link,make_variable
+          st   rv,current_screen_ptr
+
+ms.no_init     equ  *
+          lis  index,0
+          l    rv,buffer.start_mod(source)
+          bnzs ms.is_start
+          bal  link,make_marker
+          st   rv,buffer.start_mod(source)
+          bal  link,set_mark_reg                  install in marker chain
+ms.is_start    equ  *
+          l    temp,buffer.top(source)
+          st   temp,marker.mv(rv)
+          l    rv,buffer.end_mod(source)
+          bnzs ms.is_end
+          bal  link,make_marker
+          st   rv,buffer.end_mod(source)
+          bal  link,set_mark_reg
+ms.is_end lis  temp,0
+          st   temp,marker.mv(rv)
+          sth  temp,screen.displayed(screen)
+          lcs  temp,1
+          st   temp,screen.force_display(screen)
+
+          l    line,op2(ops)                 get starting line
+          sth  line,screen.line_on_screen(screen)
+          l    temp,screen_chain
+          st   temp,screen.next(screen)      thread it on the list
+          st   screen,screen_chain
+
+          sth  type,screen.last_line(screen)
+          lis  line,0
+          lh   get,screen.line_on_screen(screen)
+          sis  get,1
+          slls get,2
+ms.loop   bal  link,make_marker
+          st   rv,screen.start(line,screen)
+          lis  index,0
+          bal  link,set_mark_reg             uses source,rv,index
+          clr  line,type
+          bnls ms.skip
+          st   screen,lines.screen(get,lp)
+ms.skip   ais  line,4
+          ais  get,4
+          clr  line,type
+          bnp  ms.loop
+
+          lr   rv,screen
+
+          b    popj
+
+*    This just forces the redisplay of a window.
+
+     instruction    force_display
+          l    screen,op1(ops)
+          l    temp,op2(ops)                 get line for center or -1
+          st   temp,screen.force_display(screen)
+          br   link
+
+*    This routine which makes sure that all windows on the screen are
+*    correct.
+
+     instruction    display
+          save
+
+
+          l    rv,linel_ptr
+          l    temp,variable.value(rv)
+          sth  temp,linel
+
+          lis  line,0                   start at first line
+disp.next l    screen,lines.screen(line,lp)
+          bzs  disp.inc_line
+          bal  link,scan_for_damage
+disp.inc_line  equ  *
+          bal  link,show_line
+          ais  line,4
+          clhi line,num_of_lines*4
+          bps  reset_screen
+          cl   screen,lines.screen(line,lp)
+          bes  disp.inc_line            another line on same screen
+          b    disp.next                new and different screen
+
+reset_screen   l    screen,screen_chain
+disp.reset_l   lh   temp,screen.displayed(screen)
+          bz   reset_next
+reset_it  l    source,screen.buffer(screen)  reset the modification markers
+          l    rv,buffer.start_mod(source)
+          l    temp,buffer.top(source)
+          st   temp,marker.mv(rv)
+          l    rv,buffer.end_mod(source)
+          lis  temp,0
+          st   temp,marker.mv(rv)
+          sth  temp,screen.displayed(screen)
+          st   temp,screen.force_display(screen)
+reset_next     l    screen,screen.next(screen)
+          bnz  disp.reset_l
+
+          l    t1,current_screen_ptr
+          l    screen,variable.value(t1)
+          l    source,screen.buffer(screen)
+          l    index,buffer.location(source)
+          cl   index,buffer.gap_start(source)
+          bnps disp.index_bg
+          a    index,buffer.gap_end(source)
+          s    index,buffer.gap_start(source)
+
+disp.index_bg  equ  *
+          lis  line,0
+          l    t1,screen.start(line,screen)  get marker for line start
+          cl   index,marker.mv(t1)
+          bl   popj
+          lh   get,screen.last_line(screen)
+disp.find_pt   ais  line,4
+          clr  line,get
+          bp   popj                          have fallen off bottom.
+          l    t1,screen.start(line,screen)
+          cl   index,marker.mv(t1)
+          bnls disp.find_pt
+          sis  line,4
+          st   index,save.index
+          lis  index,0
+          bal  link,get_init
+          lis  colno,1
+          l    index,screen.start(line,screen)
+          l    index,marker.mv(index)
+disp.find_pos  cl   index,save.index
+          bnls disp.position
+          bal  link,assemble_char
+          bs   disp.find_pos
+disp.position  equ  *
+          lhi  char,c'xy'                    position to right place
+          sth  char,dispop
+          sth  colno,x_cord
+          lr   char,line
+          srls char,2
+          ah   char,screen.line_on_screen(screen)
+          sth  char,y_cord
+
+          la   char,user_output              setup for call to order
+          st   char,arg1p(sp)
+          la   char,curpos_string
+          st   char,arg2p(sp)
+          la   char,pos_struc_ptr
+          st   char,arg3p(sp)
+          la   char,code(sp)
+          st   char,arg4p(sp)
+          lhi  char,20
+          st   char,alist_size(sp)
+          la   ap,alist(sp)
+
+          save
+          bal  link,scs$order
+          restore
+
+          b    popj
+
+scan_for_damage equ *
+
+          lh   temp,screen.displayed(screen)      already done
+          bnzr link
+          lis  temp,1
+          sth  temp,screen.displayed(screen)
+
+          save
+
+*         line points to first line in window.
+*         screen is set to screen for this window.
+
+*         First we have to see where the modifications are.
+
+          lcs  temp,1
+          sth  temp,screen.first_mod(screen) initialize this
+          lh   temp,screen.line_on_screen(screen)
+          sis  temp,1
+          slls temp,2
+          sr   line,temp                     get to screen relative line
+          l    source,screen.buffer(screen)
+          l    t1,screen.force_display(screen)    special display instructions
+          bm   us.center
+          bnz  us.blast_marks
+          lh   get,screen.last_line(screen)  this is a random reg. ICB
+          lr   type,line                     use type to find pt
+          l    index,buffer.location(source)
+          cl   index,buffer.gap_start(source)     make marker type ptr
+          bnps us.index_bg
+          a    index,buffer.gap_end(source)
+          s    index,buffer.gap_start(source)
+
+us.index_bg    equ  *
+          l    t1,screen.start(type,screen)  get marker for line start
+          cl   index,marker.mv(t1)
+          bl   us.center
+us.find_pt     ais  type,4
+          clr  type,get
+          bp   us.center                     have fallen off bottom.
+          l    t1,screen.start(type,screen)
+          cl   index,marker.mv(t1)
+          bps  us.find_pt
+
+*         By the time we get here "line" is first line and "get" is last line
+*         and type is line after point.
+
+          clh  type,screen.last_line(screen) off the bottom?
+          be   us.center
+          l    t1,buffer.start_mod(source)
+          l    temp,marker.mv(t1)
+          l    t1,buffer.end_mod(source)
+          cl   temp,marker.mv(t1)            any modifications?
+          bp   popj                          not a thing to do!
+          l    rv,screen.start(line,screen)
+          cl   temp,marker.mv(rv)
+          bnl  us.just_scan                  if after first line then win
+          l    t1,buffer.end_mod(source)
+          l    temp,marker.mv(t1)
+          cl   temp,marker.mv(rv)            is end above us too?
+          bnp  popj                          no real work to do
+
+*    weird_backup_hack is here.  This routine finds the starting position
+*    of the top of the screen.  t1 points to the end_mod marker. line
+*    point to first line and type points to line after pt. get points
+*    to last line in window.
+
+*    First thing to do is find out how many lines to back up.  We
+*    start at end_mod unless off the screen.  If it is off then go
+*    half a screen up from pt.
+
+          l    rv,screen.start(get,screen)
+          l    temp,marker.mv(t1)            compare end_mod to last line
+          cl   temp,marker.mv(rv)
+          bnl  wbh.count_em
+us.center lh   t1,screen.last_line(screen)
+          srls t1,3                          divide by two
+us.blast_marks equ  *
+          lis  temp,0
+          lis  rv,0
+us.bm.loop     equ  *
+          l    index,screen.start(rv,screen)
+          st   temp,marker.mv(index)
+          ais  rv,4
+          clh  rv,screen.last_line(screen)
+          bnps us.bm.loop
+
+          l    index,buffer.location(source) place to start from
+          cl   index,buffer.gap_start(source)
+          bnp  wbh.count_back
+          a    index,buffer.gap_end(source)  make absolute
+          s    index,buffer.gap_start(source)
+          b    wbh.count_back
+
+*         This finds the line before end_mod.  We will fill from here
+*         back from the "points" on the stack.
+
+wbh.count_em   sis  get,4               temp has marker.mv(t1) in it
+          cr   get,line                      at the beginning yet?
+          bnps wbh.set_start
+          l    rv,screen.start(get,screen)
+          cl   temp,marker.mv(rv)            find line before end_mod
+          bnp  wbh.count_em
+wbh.set_start  ais  get,4               we really want one more
+          l    t1,screen.start(get,screen)   for eval_mark_reg
+          l    index,marker.mv(t1)           place for back up to start
+          sr   get,line
+          srls get,2
+          lr   t1,get                        save numer of lines here
+
+*    t1 is number of lines to count back and index is the place to start.
+*    we look for t1 CRs or t1*linel chars.
+
+wbh.count_back save                          so we can bash line,screen
+          st   index,save.index              place to stop when going for.
+          lr   temp,t1                       number of lines from top
+          slls temp,2
+          ar   temp,line
+          st   temp,save.count               save line number to start on
+          lr   t2,index
+          bal  link,getr_init                so we can get chars in rev.
+          lr   index,t2
+
+          ais  t1,1                          one extra line for good measure
+          lr   t2,t1
+          mh   t2,linel
+wbh.back_loop  balr link,get
+          b    wbh.forward                   if we fell off end
+          sis  t2,1                          got a char
+          bm   wbh.forward
+          clhi char,x'0d'                    if a cr then dec. t1 too
+          bnes wbh.back_loop
+          sis  t1,1
+          bnm  wbh.back_loop
+
+*    Now index is a marker type value giving our position.
+*    The idea is now to move forward pushing the position of each line onto
+*    the stack as we go.  When we reach the marker position of the first line
+*    after end_mod we take the top N lines of the stack and put them into
+*    lines.start and pop the rest away.
+
+wbh.forward    lr   rv,index                      so we can save it.
+          ais  rv,1                          we backed up too far.
+          restore
+          st   stack,save.stack              so we can pop right.
+          st   screen,save.screen            instead of a push
+          st   line,save.line
+          lr   t1,rv                         save index across get_init
+          bal  link,get_init                 setup for call to get_line
+          lr   index,t1                      was saved from above
+          l    t1,save.index                 posn to stop at
+          lis  type,0
+wbh.for_loop   st   index,0(stack)                save the start of each line
+          ais  stack,4
+          bal  link,get_line
+          lr   index,rv                      get_line does a restore...
+          lr   char,char
+          bm   wbh.unwind.c                  if char<0 then ran off end
+          clr  index,t1
+          bls  wbh.for_loop                  need more lines still
+          bes  wbh.unwind
+          bs   wbh.unwind.f
+
+wbh.unwind.c   ais  type,1                        clear rest of screen
+wbh.unwind     equ  *    
+wbh.unwind.f   ais  type,1                        keep on filling
+          l    line,save.line                hit it right on.
+          l    t1,save.count
+wbh.pop_next   l    rv,screen.start(t1,screen)
+          lis  temp,0
+          cl   stack,save.stack
+          bes  wbh.filling                   no pop, fill with zeros
+          sis  stack,4
+          l    temp,0(stack)
+wbh.filling    cl   temp,marker.mv(rv)
+          bes  wbh.line_same                 already set right
+          st   temp,marker.mv(rv)
+          lr   temp,t1                       means mungeds start ptrs
+          srls temp,2
+*(problem with one line windows?)
+          sbt  temp,screen.force_display(screen)
+          sis  temp,1                        previos line is changed
+          sbt  temp,screen.force_display(screen)  mark it for update
+wbh.line_same  sis  t1,4
+          cr   t1,line                       done yet?
+          bnm  wbh.pop_next
+          l    stack,save.stack              pop off any extra
+
+          lr   type,type
+          be   popj                          we're done
+          l    t1,save.count                 get line to continue at
+          clhi type,1
+          be   wbh.start_sl                  go on filling screen
+          lh   temp,screen.last_line(screen)
+          lr   rv,t1
+          srls rv,2           make it a bit ptr
+          sis  rv,1                          if different mark last line
+wbh.fd_loop    ais  t1,4           get to next line
+          ais  rv,1
+          cr   t1,temp
+          bp   popj
+          l    get,screen.start(t1,screen)
+          cl   index,marker.mv(get)
+          be   popj
+          st   index,marker.mv(get)
+          sbt  rv,screen.force_display(screen)
+          b    wbh.fd_loop
+
+wbh.start_sl   equ  *
+          ais  t1,4
+          l    line,screen.start(t1,screen)
+          cl   index,marker.mv(line)         are we in synch
+          be   popj
+          st   index,marker.mv(line)         fill in line we overflowed to.
+          lr   line,t1                       setup for branching into js
+          srls t1,2                          make into bit ptr
+          sbt  t1,screen.force_display(screen)
+          b    js.wbh_gate
+
+*    In this place we scan from the line containing start_mod to the line
+*    containing end_mod or the end of the screen.
+
+*    Comming in here only line and screen are relied on.
+
+*    First we want to set up for call to get_init and hence get_line.
+*    This involves setting index to eval(marker.mv) of the line before
+*    start_mod.  Then just setting up starting and stopping conditions.
+
+us.just_scan   l    rv,buffer.start_mod(source)
+          l    temp,marker.mv(rv)
+          lh   t1,screen.last_line(screen)
+
+js.find_start  l    rv,screen.start(line,screen)
+          cl   temp,marker.mv(rv)
+          bls  js.found_start
+          ais  line,4
+          clr  line,t1
+          bnps js.find_start
+          b    popj                          nothing to do
+
+js.found_start equ  *
+          sis  line,4         back up one.
+          sth  line,screen.first_mod(screen) save this
+          l    t1,screen.start(line,screen)
+          bal  link,eval_mark_reg
+          lr   index,rv
+js.wbh_gate    lr   type,line                     save the starting line
+          l    rv,buffer.end_mod(source)
+          l    temp,marker.mv(rv)
+          lh   t1,screen.last_line(screen)   set up last line
+
+js.find_end    l    rv,screen.start(line,screen)
+          cl   temp,marker.mv(rv)
+          bnps js.found_end                  find line just passed end_mod
+          clr  line,t1
+          bnls js.found_end
+          ais  line,4
+          bs   js.find_end
+
+js.found_end   lr   t1,line                  save this for the loop
+          lr   line,type                     this is where we start.
+*         ais  line,4                        compare with next line
+          bal  link,get_init
+          lr   type,t1                       this is end_mod
+          lh   t1,screen.last_line(screen)   This is really the end.
+
+js.scan_loop   bal  link,get_line
+          lr   index,rv
+          l    rv,screen.start(line,screen)
+          clr  line,type                     are we past end_mod yet?
+          bls  js.skip_test
+          cl   index,marker.mv(rv)           are we in sync yet?
+          be   popj                          line set so don't mark it
+js.skip_test   st   index,marker.mv(rv)
+          lr   temp,line
+          srls temp,2
+          sbt  temp,screen.force_display(screen)  mark this line
+          ais  line,4
+          clr  line,t1
+          bnp  js.scan_loop
+          b    popj
+
+colno          equ  first_free+7                  So put_ptr and sink can be used
+
+get_line       equ  *
+*    This routine reads characters using "get" until it gets a full line.
+*    It returns with reg 0 (char ,temp) set to -1 if it is at the end
+*    of the buffer.
+          save
+          lis  colno,1
+gl.loop        st   index,save.index              save incase we have to backup
+          bal  link,assemble_char
+          lr   char,char
+          bms  gl.return
+          clhi char,x'0d'                    CR
+          bes  gl.return
+gl.check_colno clh  colno,linel
+          bes  gl.return
+          bl   gl.loop                       still more room.
+          l    index,save.index              fell off end (back up one)
+          bs   gl.return
+gl.return      lr   rv,index                      so we can return index
+          b    popj
+
+*    This gets a char and increments colno by the approptiate amount
+
+assemble_char  lr   rv,link
+          balr link,get
+          lr   link,rv
+          br   link                          if error (fell off end)
+          lr   link,rv                       returns here if get a char
+          clhi char,x'0d'                    CR: resets colno
+          bnes ac.not_cr
+          st   colno,save.colno              save this for get_line
+          lis  colno,1
+          br   link
+ac.not_cr      clhi char,x'09'                    Tab
+          bnes ac.reg
+          lr   type,colno                    uses type,sink which are cont.
+          lis  0,5
+          dhr  type,0                        remander->type,quotient->sink
+          mhr  sink,0
+          ais  sink,6
+          lr   colno,sink
+          br   link
+ac.reg         lr   rv,char
+          slls rv,1
+          ah   colno,size_table(rv)
+          br   link
+
+*    This routine check the current line and checks
+*    the damage switch.  If the switch is set the line is assembled
+*    and output at the appropriate place on the screen.  If only the
+*    redisplay switch is set then that line is output from the
+*    start_mod position to the end of the line.
+
+show_line      equ *
+          lr   screen,screen
+          bzr  link                          we get some real weirdos!
+          save
+
+          l    source,screen.buffer(screen)
+          lh   temp,screen.line_on_screen(screen)
+          sis  temp,1
+          lr   rv,temp                       bit ptr to line flags
+          slls temp,2
+          sr   line,temp                     get line relative to screen
+
+          clh  line,screen.first_mod(screen)
+          bes  sl.start_mod                  do this line.
+
+          lr   rv,line
+          srls rv,2
+          tbt  rv,screen.force_display(screen)
+          bz   popj
+          b    sl.stuff_it
+
+*    This means output line from start_mod to end else same as negative flag
+
+sl.start_mod   equ  *
+          lis  index,0
+          bal  link,get_init
+
+          l    rv,screen.start(line,screen)
+          l    index,marker.mv(rv)
+          lis  colno,1
+          l    rv,buffer.start_mod(source)        go to sm before printing
+          l    type,marker.mv(rv)
+sl.find_sm     clr  index,type                         stop at start_mod
+          bnl  sl.put_it
+          bal  link,assemble_char                 this bashes rv
+          clhi char,x'0d'
+          bnes sl.find_sm
+          lis  temp,4
+          ahm  temp,screen.first_mod(screen)      sm is really on next line
+          b    popj                               punt if sm is at end of line
+
+sl.stuff_it    equ  *
+          lis  index,0
+          bal  link,get_init
+          l    rv,screen.start(line,screen)
+          l    index,marker.mv(rv)
+          lis  colno,1
+sl.put_it la   type,io_buffer(sp)                 running low on regs
+          l    rv,screen.start+4(line,screen)
+sl.stuff_l     equ  *
+          cl   index,marker.mv(rv)                are we done yet?
+          bnls sl.output
+          balr link,get
+          b    error11                            can't report this as an error
+*         bal  link,error                         shouldn't run out of chars
+error11   equ  *
+          clhi char,x'0d'
+          bes  sl.output
+          stb  char,0(type)
+          ais  type,1
+          bs   sl.stuff_l
+
+sl.output lhi  char,c'xy'                    position to right place
+          sth  char,dispop
+          sth  colno,x_cord
+          lr   char,line
+          srls char,2
+          ah   char,screen.line_on_screen(screen)
+          sth  char,y_cord
+
+          la   char,user_output              setup for call to order
+          st   char,arg1p(sp)
+          la   char,curpos_string
+          st   char,arg2p(sp)
+          la   char,pos_struc_ptr
+          st   char,arg3p(sp)
+          la   char,code(sp)
+          st   char,arg4p(sp)
+          lhi  char,20
+          st   char,alist_size(sp)
+          la   ap,alist(sp)
+
+          save
+          bal  link,scs$order
+*
+          lhi  char,c'cl'                    clear the line too
+          sth  char,dispop
+          bal  link,scs$order
+*
+          lr   char,type                     calculate line size
+          shi  char,io_buffer(sp)
+          st   char,io_buffer_len(sp)
+          la   char,io_buffer_ptr(sp)        set up for call to put_chars
+          st   char,arg2p(sp)
+          la   char,io_buffer_len(sp)
+          st   char,arg3p(sp)
+          bal  link,iocs$put_chars
+          restore
+
+          b    popj
+
+
+size_table     equ  *
+          dc   2,2,2,2,2,2,0,-1,0,0,2,2,0,2,2,2
+          dc   2,2,2,2,2,2,2,2,2,2,2,1,2,2,2,2
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+          dc   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0
+
+linel_string   dc   5,c'linel'
+current_screen_string    dc   14,c'current_screen'
+
+
+screen_chain   dac  0
+
+pos_struc_ptr  dac  0
+curpos_string  dc   c'cur_pos '
+pos_struc      equ  *
+dispop         dc   c'xy'
+x_cord         dc   0
+y_cord         dc   0
+
+num_of_lines   equ  25
+          align 4
+lines.screen   ds   num_of_lines*4
+lines.next     ds   num_of_lines*4
+
+linel          dc   80
+
+          align 4
+linel_ptr      ds   4
+current_screen_ptr  ds   4
+
+save.count     dac  0
+save.stack     dac  0
+save.screen    dac  0
+save.line      dac  0
+save.index     dac  0
+save.colno     dac  0
+
+^L

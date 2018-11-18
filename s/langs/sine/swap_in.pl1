@@ -1,0 +1,233 @@
+
+incorify:  proc(buf);
+
+%include data_types;
+
+dcl buf pointer;
+
+dcl init_hack (20) fixed(31) static init((20)0);
+dcl 1 seg_table(10) defined init_hack,
+     2 buf ptr,
+     2 time fixed(31);
+dcl num_segs fixed static init(0);
+dcl time fixed(31) static init(0);
+dcl max_segs fixed static init(0);
+dcl max_swapable_segs fixed static init(3);
+
+dcl scs$ioa entry options(variable);
+dcl scs$break_entry entry;
+
+dcl tp pointer;
+dcl last_free fixed;
+dcl i fixed;
+dcl arn bit(1) init("1"b);
+
+     if buf->buffer.base ^= ptr(2,-2) then return;
+     do while (num_segs >= max_swapable_segs);
+          call best_seg_to_punt(i);
+          call swap_out(i);
+          arn = "0"b;
+          end;
+     if arn then do;
+          do i = 1 to max_segs;
+               if seg_table(i).buf = null() then go to found_slot;
+               end;
+          max_segs = max_segs + 1;
+          i = max_segs;
+          end;
+found_slot:
+     call swap_in(buf,i,arn);
+/*
+call scs$ioa("Incorifying ^p",buf);
+do i = 1 to max_segs;
+call scs$ioa("^i ^p@^p",i,seg_table(i).buf,seg_table(i).buf->buffer.base);
+end;
+*/
+
+     return;
+
+swapify:       entry(buf);
+     /* makes the buffer known to the swaping data base (swl) */
+
+     if num_segs >= max_swapable_segs
+          then do;
+               call best_seg_to_punt(i);
+               call swap_out(i);
+               end;
+          else do;
+               do i = 1 to max_segs;
+                    if seg_table(i).buf = null() then go to got_slot;
+                    end;
+               max_segs = max_segs + 1;
+               i = max_segs;
+               end;
+got_slot:
+     if seg_table(i).buf ^= null() then do;
+          call scs$ioa("Swapout failed!?!?! (^i) ^p@^p still here",i,
+               seg_table(i).buf,seg_table(i).buf->buffer.base);
+          call scs$break_entry;
+          end;
+     seg_table(i).buf = buf;
+     time = time + 1;
+     seg_table(i).time = time;
+     num_segs = num_segs + 1;
+/*
+call scs$ioa("Swapifing ^p@^p",buf,buf->buffer.base);
+do i = 1 to max_segs;
+call scs$ioa("^i ^p@^p",i,seg_table(i).buf,seg_table(i).buf->buffer.base);
+end;
+*/
+     return;
+
+best_seg_to_punt:   proc(best_seg);
+
+dcl best_seg fixed;
+dcl best_time fixed(31);
+dcl i fixed;
+
+     best_time = 30000;
+     best_seg = 0;
+     do i = 1 to max_segs;
+          if seg_table(i).buf = null() then continue;
+          if substr(seg_table(i).buf->buffer.flags,2,1) then continue;
+          if seg_table(i).time < best_time then do;
+               best_time = seg_table(i).time;
+               best_seg = i;
+               end;
+          end;
+     if best_seg = 0 then do;
+          call scs$ioa("CODE 5: no paddle^runder consideration:");
+          do i = 1 to max_segs;
+               call scs$ioa ("^i: ^8w (time=^i)",
+                    i,seg_table(i).buf,seg_table(i).time);
+               end;
+          call scs$break_entry;
+          end;
+     return;
+     end;
+
+swap_out: proc(e);
+
+%include address_space;
+
+ dcl e fixed;
+ dcl buf ptr;
+ dcl four fixed(31) init(4);
+ dcl swap_segs$out entry (ptr,ptr);
+ dcl scs$nothing ptr external;
+ dcl hcs$switch_call entry (char(4),ptr,ptr,ptr);
+
+ dcl current_space char(4) aligned static init("sina");
+ dcl current_space_number fixed(31) defined current_space;
+ dcl space_ptr ptr static init(null());
+ dcl seg_no fixed static init(2);
+ dcl i fixed;
+
+     buf = seg_table(e).buf;
+     if buf->buffer.base = ptr(2,-2) then do;     /* already swapped out */
+          call scs$ioa("Already swapped out! (^i) ^p@^p",e,buf,buf->buffer.base);
+          call scs$break_entry;
+          return;
+          end;
+     if buf->buffer.real_hole = null() then do;
+find_a_free_segment:
+          if space_ptr = null()
+               then do;
+                         /* make sure the space exists */
+                    call hcs$switch_call(current_space,addr(scs$nothing),
+                         addr(four),null());
+                    do space_ptr = ptr(13,"00cc"b4) repeat space_ptr->as.next
+                       while (space_ptr->as.name ^= current_space);
+                         end;
+                    end;
+          do i = seg_no to 12;
+               if space_ptr->as.sdbs(i).sdbofs = "0"b then do;
+                    buf->buffer.real_hole = ptr(i,rel(space_ptr));
+                    seg_no = i + 1;
+                    go to outen_it;
+                    end;
+               end;
+          current_space_number = current_space_number + 1;
+          space_ptr = null();
+          seg_no = 2;
+          go to find_a_free_segment;
+          end;
+
+outen_it:
+     call swap_segs$out(buf->buffer.base,buf->buffer.real_hole);
+/*
+call scs$ioa ("swapped out buffer ^p from ^p",buf,buf->buffer.base);
+*/
+     buf->buffer.base = ptr(2,-2); /* mark it as not here */
+     seg_table(e).buf = null();
+     num_segs = num_segs - 1;
+     return;
+
+     end;
+
+swap_in:  proc(buf,e,arn);
+
+%include tcb;
+
+dcl buf ptr;
+dcl e fixed;
+dcl arn bit(1);
+dcl tp ptr;
+dcl scs$break_entry entry;
+dcl i fixed;
+dcl swap_segs$in entry (ptr,ptr);
+dcl hcs$cur_task ptr external;
+dcl asp ptr;
+dcl 1 addr_s based(asp),      /* the current address space */
+     2 next ptr,
+     2 sdb (0:16) bit(32);
+dcl hcs$add_ref_name entry(ptr,char(32)varying);
+
+dcl 1 ref_hack static unaligned,
+     2 len fixed(31) init(16),
+     2 string_part_1 char(15) init("sine_swap_segs."),
+     2 index char(1) init("a");
+dcl refname char(32)varying defined ref_hack;
+dcl ref_index fixed bin(7) defined ref_hack.index;
+
+     if buf->buffer.base ^= ptr(2,-2) then return;
+     if buf->buffer.real_hole = null() then do;
+          call scs$ioa("No place to swap buffer: ^p",buf);
+          call scs$break_entry;
+          return;
+          end;
+
+     asp = hcs$cur_task->tcb.address_space_ptr;
+     do i = 3 to 12;
+          if sdb(i) = "0"b then do;
+               tp = ptr(i,0);
+               call swap_segs$in(buf->buffer.real_hole,tp);
+               buf->buffer.base = tp;
+               seg_table(e).buf = buf;
+               time = time + 1;
+               seg_table(e).time = time;
+               num_segs = num_segs + 1;
+               if arn then call hcs$add_ref_name (tp,refname);
+               ref_index = ref_index + 1;
+/*
+call scs$ioa ("swapped in buffer ^p to ^p @ ^i",seg_table(e).buf,tp,time);
+*/
+               return;
+               end;
+          end;
+
+     call scs$ioa("No free segments in AS");
+     call scs$break_entry;
+     end;
+
+     return;
+
+gc_swap_in_table:   entry (table_ptr);
+
+dcl table_ptr ptr options(nomap);
+
+     table_ptr = addr(init_hack(1));
+     return;
+
+end;
+^L

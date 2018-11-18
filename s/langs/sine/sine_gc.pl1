@@ -1,0 +1,335 @@
+
+sine_gc:  proc (state,toh,variable_chain,current_screen_ptr,screen_chain,
+                lines,arglist,restart);
+
+dcl toh ptr options (nomap);  /* top of heap: where to allocate new storage */
+dcl variable_chain ptr options (nomap); /* links all vbls together */
+dcl current_screen_ptr ptr options(nomap);
+dcl screen_chain ptr options(nomap);
+dcl 1 lines,
+          2 screen (25) ptr;
+dcl 1 arglist,
+          2 args (4) ptr;
+dcl 1 restart,
+          2 buf ptr,
+          2 loc fixed(31),
+          2 vbl_tab ptr;
+dcl 1 seg_table (10) based (table_ptr),
+          2 buf ptr,
+          2 foo bit(32);
+
+%include state;
+%include stack;
+%include data_types;
+
+/*   This is a stand alone copying garbage collector for the sine machine.
+     It knows the location of the sine_string_space which is the heap to
+     be GC'ed and the sine_stack which contains most of the references to
+     objects that must not be GC'ed.  It is passed as arguments all the other
+     relavent info.  It is designed to run in a separate address space thus
+     its stand alone ish ness.                                             */
+
+dcl hcs$initiate_w_options entry (char(168)vary, char(32)vary, char(32)vary,
+     bit(1), ptr, fixed(31));
+dcl hcs$append_seg entry (char(168)vary, char(32)vary, fixed(31));
+dcl hcs$truncate_file entry (char(168) vary, char(32)vary, fixed, fixed(31));
+dcl scs$get_uname entry returns(char(8)vary);
+dcl scs$find_gate_space entry (char(32)vary,char(4),char(4),ptr,fixed(31));
+dcl com_error entry options(variable);
+dcl scs$ioa entry options(variable);
+dcl sine_machine$gc_swap_in_table entry returns(ptr);
+
+dcl size builtin;
+dcl gcbug condition;
+
+dcl uname char(8) varying;
+dcl dir char(168)varying static init (">process_dir>sine_segments");
+dcl string_space_name char(32)varying static;
+dcl string_space_ptr ptr static;
+dcl stack_name char(32)varying static;
+dcl heap char(1) based (string_space_ptr);
+dcl new_string_space_name char(32)vary static;
+dcl new_string_space_ptr ptr static;
+dcl table_ptr ptr static;
+dcl 1 gc_temp based(new_string_space_ptr),
+          2 new_heap char(1);
+dcl new_toh ptr;
+dcl top ptr;
+dcl tp ptr;
+dcl ftp fixed(31) defined tp;
+dcl sb ptr;
+dcl bp ptr based;
+dcl forward bit(32) based;
+dcl code fixed(31);
+dcl nspace char(4);
+dcl new_segno fixed static;
+dcl segno fixed static;
+dcl off fixed;
+dcl num fixed;
+dcl i fixed;
+
+dcl first_time bit(1) static init("1"b);
+dcl debug bit(1) init("1"b);
+
+dcl metering_data_num(11) static init ((11) 0);
+dcl metering_data_size(11) static init ((11)0);
+dcl number_of_gcs fixed static init (0);
+
+     if first_time then do;
+          uname = scs$get_uname();
+          string_space_name = uname || ".sine_string_space";
+          call scs$find_gate_space(string_space_name,"    ",nspace,
+               string_space_ptr,code);
+          if code < 0 then do;
+barf_out:      call com_error (code,"sine_gc");
+               signal gcbug;
+               return;
+               end;
+          call hcs$initiate_w_options (dir,string_space_name,string_space_name,
+               "1"b,string_space_ptr,code);
+          if code < 0 then go to barf_out;
+          segno = baseno(string_space_ptr);
+          stack_name = uname || ".sine_stack";
+          call scs$find_gate_space(stack_name,nspace,nspace,tp,code);
+          if code < 0 then go to barf_out;
+          call hcs$initiate_w_options (dir, stack_name, "sine_stack",
+               "1"b,tp,code);
+          if code < 0 then go to barf_out;
+          new_string_space_name = uname || ".sine_new_string_space";
+          call hcs$append_seg (dir,new_string_space_name,code);
+          call hcs$initiate_w_options (dir,new_string_space_name,
+               new_string_space_name, "0"b, new_string_space_ptr, code);
+          if code < 0 then go to barf_out;
+          new_segno = baseno(new_string_space_ptr);
+          table_ptr = sine_machine$gc_swap_in_table();
+          first_time = "0"b;
+          end;
+
+     call hcs$truncate_file (dir,new_string_space_name,0,code);
+     if code < 0 then go to barf_out;
+     call hcs$truncate_file (dir,stack_name,rel(state.sp)/2048+1,code);
+
+     number_of_gcs = number_of_gcs + 1;
+     new_toh = new_string_space_ptr;
+
+/*   We start by getting everything on the stack  */
+
+     top = state.sp;
+     do sb = state.sb repeat frame.saved_sb while (sb ^= null());
+          call gc (frame.saved_pc.buf);
+          call gc (frame.saved_ip);
+          call gc (frame.name_of_function);
+          do tp = frame.handlers repeat tp->handlers.next while (tp ^= null());
+               call gc (tp->handlers.addr_buf);
+               end;
+          num = frame.num_temps;
+          tp = addr(frame.temps(0));
+          do i = 1 to num;
+               call gc (tp->bp);
+               ftp = ftp + 4;
+               end;
+          num = frame.num_bound;
+          do i = 1 to num;
+               off = rel(tp->bindings.value_addr)-rel(tp->bindings.object);
+               call gc (tp->bindings.object);
+               call gc (tp->bindings.old_value);
+               rel(tp->bindings.value_addr) = rel(tp->bindings.object) +
+                    off;
+               ftp = ftp + 12;
+               end;
+          if frame.handlers ^= null()             /* last handler */
+               then tp = addrel(frame.handlers,size(handlers));
+          do ftp = ftp repeat ftp + 4 while (tp < top);
+               call gc (tp->bp);
+               end;
+          top = sb;
+          end;
+
+/* Now we get all the variables */
+
+     call gc (variable_chain);
+     call gc (state.pc.buf);
+     call gc (state.ip);
+     call gc (current_screen_ptr);
+     call gc (screen_chain);
+     do i = 1 to 25;
+          call gc (lines.screen(i));
+          end;
+     do i = 1 to 4;
+          call gc (arglist.args(i));
+          end;
+     call gc (restart.buf);
+     call gc (restart.vbl_tab);
+     do i = 1 to 10;
+          tp = seg_table(i).buf;
+          if tp ^= null() then unspec(tp) = unspec(tp) | "10000000"b4;
+          call gc (tp);
+          seg_table(i).buf = tp;
+          end;
+
+/* All done except for cleanup */
+
+     call hcs$truncate_file (dir,string_space_name,rel(new_toh)/2048+1,code);
+     if code < 0 then go to barf_out;
+     code = rel(new_toh);
+     substr(heap,1,code) = substr(new_heap,1,code);
+     rel(toh) = code;
+
+     return;
+
+gc:  proc(aobject);
+
+dcl aobject ptr;
+dcl object_base ptr;
+dcl object ptr based(object_base);
+dcl nobject ptr;
+dcl tp ptr;
+dcl fp ptr;
+dcl 1 overlays based(object_base) unaligned,
+     2 type bit(4),
+     2 seg_in fixed bin (7);
+
+dcl data_type fixed;
+dcl i fixed;
+dcl num fixed;
+dcl types (14) label constant;
+dcl forward bit(32) based (object);
+dcl vbls (0:1) ptr based;
+dcl bnum fixed(31) based;
+dcl bchar char(1) based;
+
+     object_base = addr(aobject);
+loop_dont_recurse:
+     data_type = type;
+     if data_type = 0 then return;      /* numbers... */
+     if data_type = 15 then return;
+     if segno ^= seg_in then return;
+     if (forward & "fff00000"b4) = "fab00000"b4 then do;
+          unspec(object) =
+               (unspec(object)&"f0000000"b4) | (forward&"000fffff"b4);
+          return;
+          end;
+     go to types(data_type);
+
+types(*):
+     signal gcbug;
+
+types(1):      /* buffer */
+     call copy (size(buffer));
+     call gc (nobject->buffer.marker_chain);
+     call gc (nobject->buffer.start_mod);
+     call gc (nobject->buffer.end_mod);
+     return;
+
+types(2):      /* string */
+     call copy ((object->string.length+2)/4*4+4);
+     return;
+
+types(3):      /* window */
+     call copy (size(window));
+     call gc (nobject->window.real_text);
+     call gc (nobject->window.start);
+     call gc (nobject->window.stop);
+     return;
+
+types(4):      /* cons */
+     call copy (size(cons));
+     call gc (nobject->cons.car);
+/*   call gc (nobject->cons.cdr); */
+     object_base = addr(nobject->cons.cdr);
+     go to loop_dont_recurse;
+     return;
+
+types(5):      /* variable */
+     call copy (size(variable));
+     call gc (nobject->variable.name);
+     call gc (nobject->variable.value);
+/*   call gc (nobject->variable.next); */
+     object_base = addr(nobject->variable.next);
+     go to loop_dont_recurse;
+     return;
+
+types(6):      /* function */
+     call copy (size(function));
+     call gc (nobject->function.buf);
+     call gc (nobject->function.vbl_tab);
+     return;
+
+types(7):      /* marker */
+     call copy (size(marker));
+/*   call gc (nobject->marker.next); */
+     object_base = addr(nobject->marker.next);
+     go to loop_dont_recurse;
+     return;
+
+types(8):      /* screen */
+     call copy (size(screen));
+     call gc (nobject->screen.buffer);
+     do i = 1 to 25;
+          call gc (nobject->screen.start(i));
+          end;
+/*   call gc (nobject->screen.next); */
+     object_base = addr(nobject->screen.next);
+     go to loop_dont_recurse;
+     return;
+
+types(9):      /* array */
+     num = object->array.size;
+     i = size(array)+object->array.type*num/8;
+     call copy (i);
+     if nobject->array.type = 32 then do i = 1 to num;
+          call gc (nobject->array.cells(i));
+          end;
+     return;
+
+types(10):     /* gnirt */
+     tp = object;             /* for efficiency */
+     tp->gnirt.max_length = tp->gnirt.real_length/16*16+16;
+     call copy (size(gnirt));
+     tp = object;             /* save the new object */
+     object = nobject->gnirt.real_text;
+     fp = nobject;            /* save its real place */
+     call copy (nobject->gnirt.max_length);
+     fp->gnirt.real_text = object;
+     object = tp;
+     return;
+
+types(11):     /* vbl_tab */
+     call copy (object->vbl_tab.num*4+4);
+     do i = 1 to nobject->vbl_tab.num;
+          call gc (nobject->vbl_tab.vbls(i));
+          end;
+     return;
+
+copy:     proc (bytes);
+
+dcl bytes fixed;
+dcl old_object ptr;
+dcl forward bit(32) based (object);
+
+     metering_data_num(data_type) = metering_data_num(data_type) + 1;
+     metering_data_size(data_type) = metering_data_size(data_type) + bytes;
+
+     old_object = object;
+     substr(new_toh->new_heap,1,bytes) = substr(old_object->heap,1,bytes);
+     rel(object) = rel(new_toh);
+     new_toh = addrel(new_toh,bytes);
+     nobject = ptr(new_segno,rel(object));
+     old_object->forward = (unspec(object) & "000fffff"b4) | "fab00000"b4;
+
+end; /* copy */
+
+end; /* gc */
+
+     return;
+pmd: entry;
+
+     call scs$ioa ("In ^i garbage collections:",number_of_gcs);
+     do i = 1 to 11;
+          call scs$ioa("type: ^i found ^i times for ^i bytes",i,
+               metering_data_num(i),metering_data_size(i));
+          end;
+     return;
+
+end; /* sine_gc.pl1 */
+^L

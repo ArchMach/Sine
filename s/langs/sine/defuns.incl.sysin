@@ -1,0 +1,202 @@
+
+*    So that there is some hope of winnage I will try to stick to
+*    the following register conventions.
+
+*         The value returned by instructions:
+
+rv             equ  1
+
+*         Operands to instructions will be pointed to by ops
+
+ops            equ  2
+
+*         For pushing and poping regs... (way up there so it will be safe)
+
+stack          equ  11
+
+*         This means that the first free register is:
+
+first_free     equ  3
+
+*         The instruction decoder and dispatch uses the following regs.
+
+opcode         equ  first_free
+optype         equ  first_free+1
+pc.buf         equ  first_free+2
+pc.loc         equ  first_free+3
+base_reg       equ  first_free+4
+test_mask      equ  first_free+5
+
+*         The co-routined read-from-text-object hack uses:
+
+source         equ  first_free
+text_ptr       equ  first_free+1
+get            equ  first_free+2
+index          equ  first_free+3
+type           equ  first_free+4
+char           equ  0
+
+*         For sticking things in buffers.
+
+sink           equ  first_free+5
+put_ptr        equ  first_free+6
+len            equ  first_free+7
+
+*         Update_gap's regs
+
+gstart         equ  first_free
+gsize          equ  first_free+1
+markers        equ  first_free+2
+from_ptr       equ  first_free+2
+to_ptr         equ  first_free+3
+num_ch         equ  first_free+4
+
+*         Temps:
+
+temp           equ  0
+t1             equ  10
+t2             equ  9
+t3             equ  8
+t4             equ  7
+t5             equ  6
+t6             equ  5
+
+*         The usual pl1 registers 12,13,14 and 15
+
+ls             equ  12
+sp             equ  13
+link           equ  14
+ap             equ  15
+
+
+*
+*    OTA's macro package
+*         (I just can't resist hacking macros any longer)
+*
+
+save macro
+ stm 2,0(stack)
+ ahi stack,56
+ mend
+
+restore macro
+ lm 2,-56(stack,0)
+ mend
+
+debug     equ  0
+
+instruction macro inst_name
+ .if debug
+ entry @inst_name
+ .fi
+@inst_name equ *
+ mend
+
+change_pc macro     base,offset
+          save
+          l    source,state.pc.buf
+          lis  temp,buffer.flags.wired
+          rbt  temp,buffer.flags(source)
+          l    source,@offset".buf"(@base)
+          st   source,state.pc.buf
+          sbt  temp,buffer.flags(source)
+          bal  link,swap_in
+          l    source,@offset".loc"(@base)
+          st   source,state.pc.loc
+          restore
+          mend
+
+branch    macro     reg,tobash
+          l    @tobash,state.pc.buf
+          s    @reg,buffer.base(@tobash)
+          st   @reg,state.pc.loc
+          mend
+
+bpcounter set  0
+make_virtual_bufptr macro     bp,buf
+bpcounter set  bpcounter+1
+          cl   @bp,buffer.gap_start(@buf)
+          bnps "bufptr.macro."@bpcounter
+          s    @bp,buffer.gap_end(@buf)
+          a    @bp,buffer.gap_start(@buf)
+"bufptr.macro."@bpcounter     equ  *
+          mend
+
+make_absolute_bufptr     macro     bp,buf
+bpcounter set  bpcounter+1
+          cl   @bp,buffer.gap_start(@buf)
+          bnps "bufptr.macro."@bpcounter
+          a    @bp,buffer.gap_end(@buf)
+          s    @bp,buffer.gap_start(@buf)
+"bufptr.macro."@bpcounter     equ  *
+          mend
+
+save_sv   macro     area
+          st   source,search_save_area_@area
+          st   get,search_save_area_@area+4
+          st   index,search_save_area_@area+8
+          st   text_ptr,search_save_area_@area+12
+          l    temp,get.stop
+          st   temp,search_save_area_@area+16
+          mend
+
+load_sv   macro     area
+          l    source,search_save_area_@area
+          l    get,search_save_area_@area+4
+          l    index,search_save_area_@area+8
+          l    text_ptr,search_save_area_@area+12
+          l    temp,search_save_area_@area+16
+          st   temp,get.stop
+          mend
+
+*         The stuff on the stack...
+
+condition_ptr  equ  12
+
+          pc   0
+          org  80
+stack_start    equ  *
+alist          equ  *
+alist_size     ds   4
+arg1p          ds   4
+arg2p          ds   4
+arg3p          ds   4
+arg4p          ds   4
+arg5p          ds   4
+arg6p          ds   4
+arg7p          ds   4
+arg8p          ds   4
+cond           equ  *
+cond.next      ds   4
+cond.handler   ds   4
+cond.name1     ds   4
+cond.name2     ds   4
+io_buffer_len  ds   4
+io_buffer_ptr  ds   4
+io_buffer      ds   84
+operand_table  ds   16
+inst_info      ds   2
+saved_opcode   ds   2
+register_save  ds   4*16
+segptr         ds   4
+segsize        ds   4
+dname          equ  *
+dname.length   ds   4
+dname.chars    ds   168
+ename          equ  *
+ename.length   ds   4
+ename.chars    ds   32
+bit_map.t      ds   4
+bit_map.l      ds   4
+bit_map.cells  ds   16
+stack_end      equ  *
+
+*         The operand table
+
+          org  0
+op1            ds   4
+op2            ds   4
+op3            ds   4
+op4            ds   4
+
+^L

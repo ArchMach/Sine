@@ -1,0 +1,195 @@
+
+
+*         dcl $pl1_load entry(structure,ptr);
+*         call $pl1_load (state,code_ptr);
+
+          extrn     $pl1_load
+
+     instruction    load
+          save
+          l    temp,op1(ops)
+          st   temp,op2(ops)
+          lcs  t1,1                     hcs$initiate only! (-1)
+          bal  link,initiate
+          l    rv,code
+          bm   popj
+          la   temp,state
+          st   temp,arg1p(sp)
+          la   temp,segptr(sp)
+          st   temp,arg2p(sp)
+          lhi  temp,12
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          st   stack,state.sp           insure consistancy
+          bal  link,$pl1_load           fas_load the program
+          l    rv,code
+          b    popj
+
+     instruction    read_file
+          save
+          lcs  t1,1                     read_only no append/truncate
+          bal  link,initiate
+          l    rv,code
+          bnms rf.ok
+f.error   lcs  temp,1
+          st   temp,error_register
+          b    popj
+rf.ok     st   rv,in.save.flag
+          l    source,op1(ops)
+          bal  link,swap_in
+          l    t1,buffer.base(source)
+          l    t2,segptr(sp)            get ptr to segment
+          la   ap,alist(sp)
+          la   link,segptr(sp)
+          st   link,arg1p(sp)
+          la   link,segsize(sp)
+          st   link,arg2p(sp)
+          lis  link,12
+          st   link,alist_size(sp)
+          save
+          bal  link,hcs$get_bit_count
+          restore
+          l    t3,segsize(sp)
+          srls t3,3
+rf.loop   sis  t3,1
+          bms  rf.done
+          lb   char,0(t2)
+          stb  char,0(t1)
+          ais  t2,1
+          ais  t1,1
+          bs   rf.loop
+
+rf.done   l    rv,buffer.marker_chain(source)     blast out all the markers
+          bzs  rf.done_zapping
+          lis  temp,0
+rf.zap_loop    equ  *
+          st   temp,marker.mv(rv)
+          l    rv,marker.next(rv)
+          bnzs rf.zap_loop
+rf.done_zapping     equ  *
+          lis  temp,0
+          st   temp,buffer.location(source)
+          l    t3,segsize(sp)
+          srls t3,3
+          st   t3,buffer.gap_start(source)
+          lhi  temp,500(t3)                  leave some room for expansion
+          st   temp,buffer.gap_end(source)
+          st   temp,buffer.top(source)
+
+          lis  temp,8
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,hcs$terminate
+
+f.win     l    rv,in.save.flag
+          lis  temp,0
+          st   temp,error_register
+          b    popj
+
+     instruction    write_file
+          save
+          l    source,op1(ops)               figure out correct size!
+          bal  link,get_length
+*
+          ahi  rv,2047
+          srls rv,11
+          lr   t1,rv
+*
+          bal  link,initiate
+          l    rv,code
+          bm   f.error
+          st   rv,in.save.flag
+          l    source,op1(ops)
+          lis  index,0
+          bal  link,get_init
+          l    t1,segptr(sp)
+wf.loop   balr link,get
+          b    wf.done
+          stb  char,0(t1)
+          ais  t1,1
+          bs   wf.loop
+wf.done   l    source,op1(ops)
+          bal  link,get_length
+          slls rv,3
+          st   rv,segsize(sp)
+          la   link,segptr(sp)
+          st   link,arg1p(sp)
+          la   link,segsize(sp)
+          st   link,arg2p(sp)
+          lis  link,12
+          st   link,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,hcs$set_bit_count
+          lis  link,8
+          st   link,alist(sp)
+          bal  link,hcs$terminate
+          b    f.win
+
+initiate  save
+          st   t1,in.save.flag                    save flag
+          l    source,op2(ops)                    get file name
+          lis  index,0
+          bal  link,get_init
+          la   t1,dname.chars(sp)
+in.loop   balr link,get
+          b    in.got_name
+          stb  char,0(t1)
+          ais  t1,1
+          bs   in.loop
+in.got_name    equ  *
+          shi  t1,dname.chars(sp)
+          st   t1,dname.length(sp)
+          la   temp,dname(sp)
+          st   temp,arg1p(sp)
+          st   temp,arg2p(sp)
+          la   temp,ename(sp)
+          st   temp,arg3p(sp)
+          la   temp,code
+          st   temp,arg4p(sp)
+          lhi  temp,20
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,scs$expand_path
+          l    temp,code
+          bm   popj
+          la   temp,ename(sp)
+          st   temp,arg2p(sp)
+
+          l    temp,in.save.flag                  check flag
+          bm   in.in
+
+          la   temp,code
+          st   temp,arg3p(sp)
+          lhi  temp,16
+          st   temp,alist_size(sp)
+          bal  link,hcs$append_seg
+          la   temp,segptr(sp)
+          st   temp,arg3p(sp)
+          l    temp,in.save.flag
+          sth  temp,segptr(sp)          fixed bin length to truncate to
+          lhi  temp,20
+          st   temp,alist_size(sp)
+          bal  link,hcs$truncate_file
+          l    temp,code
+          bnms in.in
+          clhi temp,-31                           we know we can't trunc. links
+          bne  popj
+
+in.in     la   temp,segptr(sp)
+          st   temp,arg5p(sp)
+          la   temp,code
+          st   temp,arg6p(sp)
+          lis  temp,0
+          st   temp,arg7p(sp)
+          la   temp,arg7p(sp)
+          st   temp,arg3p(sp)                     null ref name
+          lcs  temp,0
+          st   temp,arg8p(sp)
+          la   temp,arg8p(sp)
+          st   temp,arg4p(sp)                     "0"b return the ptr
+          lhi  temp,28
+          st   temp,alist_size(sp)
+          bal  link,hcs$initiate_w_options
+          b    popj
+
+^L

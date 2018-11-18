@@ -1,0 +1,81 @@
+
+sine:     procedure;
+
+%include tty_info;
+
+ dcl gsti$get_tty_info entry (ptr,structure);
+ dcl gsti$set_tty_info entry (ptr,structure);
+ dcl linkage$user_input ptr external;
+ dcl 1 saved_tty_info like tty_info;
+
+ dcl hcs$initiate entry (char(168)vary,char(32)vary,pointer,fixed(31));
+ dcl scs$ioa entry options (variable);
+ dcl scs$expand_path entry (char(168)vary,char(168)vary,char(32)vary,fixed(31));
+
+ dcl com_error entry options(variable);
+
+ dcl sine_machine$interp entry (pointer);
+ dcl sine_machine$initialize entry;
+
+ dcl dname char(168) varying;
+ dcl ename char(32) varying;
+ dcl uname char(8) varying;
+ dcl pgm_ptr pointer static;
+ dcl code fixed(31);
+
+ dcl scs$get_arg_count entry (fixed);
+ dcl scs$get_arg_info entry (fixed,fixed,fixed,ptr);
+ dcl scs$break_entry entry;
+
+ dcl ap pointer;
+ dcl arg char(al) based(ap);
+ dcl at fixed;
+ dcl al fixed;
+ dcl nargs fixed;
+
+ dcl first_time bit(1) static init("1"b);
+ dcl (break, cleanup) condition;
+
+     call scs$get_arg_count (nargs);
+     if nargs = 0 then if first_time
+          then do;
+               call com_error(0,"sine","what program should be loaded?");
+               return;
+               end;
+          else go to call_interp;
+     call scs$get_arg_info (1,at,al,ap);
+     call scs$expand_path (arg,dname,ename,code);
+     ename = ename || ".sine";
+     call hcs$initiate (dname,ename,pgm_ptr,code);
+     if code < 0 then do;
+          call com_error(code,"sine","where is ^a>^a",dname,ename);
+          return;
+          end;
+     if first_time then do;
+          call sine_machine$initialize;
+          first_time = "0"b;
+          end;
+
+call_interp:
+
+     call gsti$get_tty_info (linkage$user_input,tty_info);
+     saved_tty_info = tty_info;
+     tty_info.echo_input = "0"b;
+     call gsti$set_tty_info (linkage$user_input,tty_info);
+
+     on break begin;
+          call gsti$set_tty_info(linkage$user_input,saved_tty_info);
+          call scs$break_entry;
+          call gsti$set_tty_info (linkage$user_input,tty_info);
+          end;
+
+     on cleanup begin;
+          call gsti$set_tty_info(linkage$user_input,saved_tty_info);
+          end;
+
+     call sine_machine$interp(pgm_ptr);
+     signal cleanup;
+     return;
+
+end;  /* sine.pl1 */
+^L

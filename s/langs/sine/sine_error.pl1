@@ -1,0 +1,150 @@
+
+error:    proc(name,state,code_seg);
+
+%include state;
+%include stack;
+%include data_types;
+
+ dcl name char(8);
+ dcl code_seg ptr;
+ dcl scs$ioa entry options(variable);
+ dcl scs$break_entry entry;
+ dcl stty entry options(variable);
+ dcl bchar char(1) based;
+ dcl tp pointer;
+ dcl fp pointer;
+ dcl first_time bit(1) static init("1"b);
+
+ dcl hcs$del_ref_name entry (char(32) varying);
+ dcl hcs$initiate_w_options entry (char(168)varying,char(32)vary,char(32)vary,
+     bit(1),ptr,fixed(31));
+ dcl scs$find_gate_space entry (char(32)vary, char(4), char(4),ptr,fixed(31));
+ dcl scs$get_uname entry returns(char(8)vary);
+ dcl com_error entry options(variable);
+ dcl scs$make_ptr entry (char(32)vary, char(32)vary, ptr,ptr,fixed(31));
+
+ dcl code fixed(31));
+ dcl uname char(8)varying;
+ dcl ename char(32)varying;
+ dcl dname char(168)vary;
+ dcl nspace char(4);
+
+     if first_time then do;
+          first_time = "0"b;
+          dname = ">process_dir>sine_segments";
+          uname = scs$get_uname();
+          ename = uname || ".sine_string_space";
+          call scs$find_gate_space(ename,"    ",nspace,
+               tp,code);
+          if code < 0 then do;
+barf_out:      call com_error (code,"error");
+               return;
+               end;
+          call hcs$initiate_w_options (dname,ename,ename,
+               "1"b,tp,code);
+          if code < 0 then go to barf_out;
+          ename = uname || ".sine_stack";
+          call scs$find_gate_space(ename,nspace,nspace,tp,code);
+          if code < 0 then go to barf_out;
+          call hcs$initiate_w_options (dname, ename, "sine_stack",
+               "1"b,tp,code);
+          if code < 0 then go to barf_out;
+          ename = "sine_machine";
+          call scs$make_ptr (ename,"opcode_table",null(),op_tab_ptr,code);
+          if code < 0 then go to barf_out;
+          call hcs$del_ref_name (ename);
+          end;
+
+start_over:
+     call scs$ioa("^rERROR: ^a",name);
+     call da (state,code_seg);
+     call scs$ioa("^rStack Trace:");
+     do tp = state.sb repeat tp->frame.saved_sb while(tp ^= null());
+          fp = tp->frame.name_of_function;
+          call scs$ioa("^a",
+               substr(fp->string.text,1,fp->string.length));
+          end;
+     call stty("echo","^rawi");
+     call scs$break_entry;
+     go to start_over;
+
+da:  entry (state,code_seg);
+
+%include opcodes;
+
+dcl 1 sine_machine$opcode_table (0:1) based(op_tab_ptr),
+     2 arg_info (4) bit(16),
+     2 inst_info fixed,
+     2 inst_offset bit(16);
+dcl op_tab_ptr ptr static;
+
+dcl scs$ioa_nnl entry options(variable);
+
+dcl vp ptr;
+dcl reg_names (0:3) char(2) static init("pc","sb","sp","ip");
+dcl op_index fixed;
+dcl i fixed;
+dcl base_reg fixed;
+dcl offset fixed;
+dcl boff bit(16) defined offset;
+dcl pushp char(1);
+dcl bb16 bit(16) based (tp);
+dcl bp ptr based;
+dcl bfixed fixed based;
+
+     tp = addrel(code_seg,state.pc.loc-2);
+     do while (substr(tp->bb16,1,3) ^= "001"b);
+          if rel(tp) = 0 then do;
+               call scs$ioa("Executing total shit in segment ^p",tp);
+               return;
+               end;
+          tp = addrel(tp,-2);
+          end;
+     op_index = tp->bb16 & "0fff"b4;
+     if substr(tp->bb16,4,1)
+          then pushp = "-";
+          else pushp = "+";
+     do i = 1 to numops;
+          if op_index = opcodes(i) then do;
+               call scs$ioa_nnl("^p: (^a) ^c ",tp,pushp,opname(i));
+               go to gather_operands;
+               end;
+          end;
+     call scs$ioa("^p: opcode ^i not found in table! recompile error.pl1?",
+          tp,op_index);
+     return;
+
+gather_operands:
+     do i = 1 to 4;
+          tp = addrel(tp,2);
+          if sine_machine$opcode_table(op_index).arg_info(i) = "0"b then leave;
+          if ^substr(tp->bb16,1,1)
+               then call scs$ioa_nnl ("^i, ",tp->bb16);
+               else do;
+                    base_reg = substr(bb16,2,2);
+                    offset = substr(bb16,4,13);
+                    if substr(boff,4,1) then substr(boff,1,3) = "111"b;
+                    if base_reg = 0
+                         then offset = offset*2;
+                         else offset = offset*4;
+                    if base_reg = 3
+                         then do;
+                              fp = addrel(state.ip,offset)->bp;
+                              if offset <= state.ip->bfixed then do;
+                                   call scs$ioa_nnl("^i(ip)=^8w",offset,fp);
+                                   continue;
+                                   end;
+                              vp = fp->variable.name;
+                              call scs$ioa_nnl("^a<-^8w, ",
+                                   substr(vp->string.text,1,vp->string.length),
+                                   fp->variable.value);
+                              end;
+                         else call scs$ioa_nnl("^i(^a), ",
+                              offset,reg_names(base_reg));
+                    end;
+          end;
+     call scs$ioa;
+     return;
+
+end;
+^L

@@ -1,0 +1,14 @@
+
+foo: proc;
+
+dcl sine_machine$pl1_allocate entry (fixed(31),ptr);
+dcl tp ptr;
+dcl i fixed;
+dcl scs$ioa entry options(variable);
+
+do i = 1 to 100;
+     call sine_machine$pl1_allocate(12,tp);
+     call scs$ioa("^i: ^p",i,tp);
+     end;
+end;
+^L

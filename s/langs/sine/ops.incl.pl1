@@ -1,0 +1,20 @@
+
+/*
+     This is a table in which the number of operands that each opcode
+     uses is looked up.
+*/
+
+  declare
+     ops (10) fixed binary(7) static init(
+2,   /* add */
+2,   /* move */
+0,   /* rtn */
+9,
+9,
+9,
+9,
+9,
+9,
+9
+                                        );
+^L

@@ -1,0 +1,1382 @@
+
+*
+*         This is the sine machine interpreter.
+*
+*    I am going to try and write it in assembler. This will probably
+*    suck shit but it will also be fast as a bat out of hell and small.
+*    Oh Well.
+*
+          copy defuns
+          copy data_types
+
+          pc   7
+
+          copy static
+
+          pc   1
+
+          entry     interp,initialize,pl1_make_vbl
+          entry     allocate,pl1_allocate,get_init,getr_init
+          extrn     iocs$get_chars,iocs$put_chars,$init,sine_error$error
+          extrn     $pl1_make_buffer,$incorify,$load_init,iocs$order
+          extrn     hcs$initiate,hcs$append_seg,hcs$truncate_file
+          extrn     hcs$initiate_w_options
+          extrn     hcs$set_bit_count,hcs$get_bit_count,hcs$terminate
+          extrn     scs$expand_path
+          extrd     linkage$user_input,linkage$user_output
+
+*         For pc relative stuff:
+
+          pc   1
+ground_zero    equ  *
+
+
+*         call initialize;
+
+initialize     .ent 12
+
+*         dcl $init entry (structure,ptr);
+*         call $init (state,string_space_ptr /* returned */);
+
+          l    temp,string_space        already initialized?
+          bnz  !1+x'b4'                 yep.
+
+          la   temp,state
+          st   temp,arg1p(sp)
+          la   temp,string_space
+          st   temp,arg2p(sp)
+          lhi  temp,12
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,$init
+          l    t1,string_space
+          lr   temp,t1
+          ais  temp,variable_size
+          st   temp,top_of_heap
+          st   temp,time_to_gc
+          lhi  temp,10*2048
+          sth  temp,time_to_gc+2
+
+          oi   t1,variable_bits
+          st   t1,linel_ptr
+          la   temp,linel_string
+          st   temp,arg3p(sp)
+          la   ops,arg3p(sp)
+          l    stack,state.sp           so make_string can save stuff
+          bal  link,make_string
+          st   rv,variable.name(t1)
+          lhi  temp,80
+          st   temp,variable.value(t1)            set up initial value
+          lis  temp,0
+          st   temp,variable.next(t1)
+          .rtn
+
+linel_string   dc   5,c'linel'
+
+*         dcl interp entry (ptr);
+*         call interp (code_ptr);
+
+interp    .ent stack_end-stack_start
+
+          st   sp,contour_ptr                incase break gets hit
+
+          bal  link,linkage$user_input       save the io stream ptrs
+          l    temp,0(2)
+          st   temp,user_input
+          bal  link,linkage$user_output
+          l    temp,0(2)
+          st   temp,user_output
+          la   temp,io_buffer(sp)
+          st   temp,io_buffer_ptr(sp)
+          lis  temp,1
+          st   temp,bit_map.t(sp)
+          lhi  temp,128
+          st   temp,bit_map.l(sp)
+
+          la   temp,pos_struc(ls)
+          st   temp,pos_struc_ptr(ls)
+
+          la   temp,state
+          st   temp,arg1p(sp)
+          l    temp,4(ap)               get ptr to code
+          st   temp,arg2p(sp)
+          lhi  temp,12
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,$load_init          fas_load the program
+
+          l    stack,state.sp           so people can save stuff
+
+          lis  temp,0                   set up break handler
+          st   temp,cond.next(sp)
+          la   temp,break_handler
+          st   temp,cond.handler(sp)
+          li   temp,c'brea'
+          st   temp,cond.name1(sp)
+          li   temp,c'k   '
+          st   temp,cond.name2(sp)
+          la   temp,cond(sp)
+          st   temp,condition_ptr(sp)
+
+          l    source,restart.buf
+          bz   next_inst
+          l    t2,state.pc.buf
+          lis  temp,buffer.flags.wired
+          rbt  temp,buffer.flags(t2)
+          sbt  temp,buffer.flags(source)
+          st   source,state.pc.buf
+          l    temp,restart.loc
+          st   temp,state.pc.loc
+          l    temp,restart.vbl_tab
+          st   temp,state.ip
+          bal  link,swap_in
+
+next_inst lh   temp,breakp
+          bzs  no_break_hit
+          lis  temp,0
+          sth  temp,breakp
+find_break     equ  *
+          la   t1,error_table_break_entry
+          b    error.signal_entry
+do_a_break     equ  *
+          lm   temp,register_save(sp)
+          bs   find_break
+
+no_break_hit   equ  *
+*         st   stack,state.sp
+          la   ops,operand_table(sp)
+          l    pc.buf,state.pc.buf      get the pc
+          l    pc.buf,buffer.base(pc.buf)
+          l    pc.loc,state.pc.loc
+          lhl  opcode,0(pc.buf,pc.loc)  get the opcode to dispatch on
+          thi  opcode,x'2000'           is it really an opcode?
+          bnzs ni.not_shit1
+ni.exe_shit    equ  *
+          b    exe_shit
+ni.not_shit1   equ  *
+          thi  opcode,x'c000'           this must be zero
+          bnzs ni.exe_shit
+          sth  opcode,saved_opcode(sp)  save for later reference
+          nhi  opcode,x'0fff'           zap those bits
+          mh   opcode,op_entry_len
+          ais  pc.loc,2
+
+          lis  t2,0                          amount to shrink stack by
+          lhl  optype,operand_types(opcode)  gets type of first operand
+          bz   interp.dispatch               no operand, just go there.
+          bal  link,decode                   decode the operand
+          st   rv,op1(ops)                   save it.
+
+          lhl  optype,operand_types+2(opcode)
+          bz   interp.dispatch
+          bal  link,decode
+          st   rv,op2(ops)
+
+          lhl  optype,operand_types+4(opcode)
+          bzs  interp.dispatch
+          bal  link,decode
+          st   rv,op3(ops)
+
+          lhl  optype,operand_types+6(opcode)
+          bzs  interp.dispatch
+          bal  link,decode
+          st   rv,op4(ops)
+
+interp.dispatch     equ  *
+          st   pc.loc,state.pc.loc           save it away
+          ar   stack,t2                      flush operands on the stack
+          lhl  temp,inst_type(opcode)        special info about the inst.
+          sth  temp,inst_info(sp)
+          lhl  t1,address(opcode)            get addr of inst. handler
+          bal  link,ground_zero(t1)
+error0    equ  *
+          lh   temp,inst_info(sp)
+          bz   next_inst
+
+*    The return inst. assumes only this bit is tested since the return inst.
+*    sets this to the opcode of the call inst.
+
+          lh   temp,saved_opcode(sp)
+          thi  temp,x'1000'             if set don't push
+          bnz  next_inst
+          st   rv,0(stack)
+          ais  stack,4
+          b    next_inst
+
+exe_shit  bal  link,error               we are executing shit
+error6    equ  *
+
+
+*              DECODE
+
+*         optype tells what kind of stuff the operand should be.
+*         it is 1 halfword long.
+
+*         bit 16 means get addr of vbl block
+*         bit 15 means addr of object.
+*         bit 1-14 bit is one if data type (0-13) is okay.
+
+vbl_address    equ  x'8000'
+addr_only      equ  x'4000'
+
+pc_reg_number  equ  0
+sp_reg_number  equ  2*4
+ip_reg_number  equ  3*4
+
+decode    lhl  rv,0(pc.buf,pc.loc)      get the operand
+          ais  pc.loc,2                 bump the pc
+*         st   pc.loc,state.pc.loc      incase we index off the pc...
+
+*    Now we do a moby dispatch for speed
+
+          lr   t3,rv                    save for the numbers
+          lr   t1,rv
+          nhi  rv,x'1fff'               trim for indexed modes
+          nhi  t1,x'e000'
+          lr   t4,optype
+          srls t4,3
+          or   t1,t4
+          srls t1,9
+          nhi  t1,x'fffc'
+          b    decode_tab(t1)
+
+decode_tab     equ  *
+          b    number_no_extend         0-00-00   positive number
+          b    do_error1                0-00-01   addr(number)
+          b    do_error3                0-00-10   number ^= variable
+          b    do_error3                0-00-11   ditto
+          b    number_no_extend         0-01-00   positive number
+          b    do_error1                0-01-01   addr(number)
+          b    do_error3                0-01-10   number ^= variable
+          b    do_error3                0-01-11   ditto
+          b    number_extend            0-10-00   positive number
+          b    do_error1                0-10-01   addr(number)
+          b    do_error3                0-10-10   number ^= variable
+          b    do_error3                0-10-11   ditto
+          b    number_extend            0-11-00   positive number
+          b    do_error1                0-11-01   addr(number)
+          b    do_error3                0-11-10   number ^= variable
+          b    do_error3                0-11-11   ditto
+          b    pc_rel                   1-00-00   std. pc relative ref.
+          b    do_error2                1-00-01   can't get addr of code
+          b    do_error3                1-00-10   pc ^= variable
+          b    do_error3                1-00-11   ditto
+          b    sb_rel                   1-01-00   std. stack base ref.
+          b    addr_sb_rel              1-01-01   for storing into sb cell
+          b    do_error3                1-01-10   vbls not on stack
+          b    do_error3                1-01-11   ditto
+          b    sp_rel                   1-10-00   std. stack top ref.
+          b    addr_sp_rel              1-10-01   for storing onto stack
+          b    do_error3                1-10-10   vbls not on stack
+          b    do_error3                1-10-11   ditto
+          b    vbl_value                1-11-00   std. vbl value ref
+          b    addr_vbl_value           1-11-01   std store into vbl
+          b    vbl_addr                 1-11-10   gets ptr to vbl
+          b    do_error3                1-11-11   cant get addr(addr(vbl))
+
+number_extend  equ  *                   negative number
+          ohi  t3,x'8000'               extend the sign
+number_no_extend    equ  *
+          lr   rv,t3
+          thi  optype,1                 check type
+          bnzr link                     numbers are allowed
+          b    do_error3
+
+pc_rel    thi  rv,x'1000'               check the sign bit
+          bzs  pc_rel.ns
+          ohi  rv,x'e000'               extend the sign
+pc_rel.ns slls rv,1                     pc increments in halfwords
+          ar   rv,pc.loc                add in the buffer offset
+          l    t1,state.pc.buf
+          a    rv,buffer.base(t1)       add in buffer base
+          thi  optype,4                 make it a string
+          bnzs pc_rel.make_it_a_string
+          thi  optype,1                 does it take addresses?
+          bnzr link
+          b    do_error3
+pc_rel.make_it_a_string  equ  *
+          oi   rv,string_bits
+          br   link
+
+sb_rel    thi  rv,x'1000'
+          bzs  sb_rel.ns
+          ohi  rv,x'e000'
+sb_rel.ns slls rv,2
+          a    rv,state.sb
+          l    rv,0(rv)
+          b    decode.check_type
+
+addr_sb_rel    equ  *
+          thi  rv,x'1000'
+          bzs  addr_sb_rel.ns
+          ohi  rv,x'e000'
+addr_sb_rel.ns equ  *
+          slls rv,2
+          a    rv,state.sb
+          br   link
+
+sp_rel    thi  rv,x'1000'
+          bzs  sp_rel.ns
+          ohi  rv,x'e000'
+sp_rel.ns slls rv,2
+          cr   rv,t2                         keep deepest stack penetration
+          bnms addr_sb_rel.deeper
+          lr   t2,rv
+addr_sb_rel.deeper  equ  *
+          l    rv,0(rv,stack)
+          b    decode.check_type
+
+addr_sp_rel    equ  *
+          thi  rv,x'1000'
+          bzs  addr_sp_rel.ns
+          ohi  rv,x'e000'
+addr_sp_rel.ns equ  *
+          slls rv,2
+          ar   rv,stack                      This is kept in a register
+          br   link
+
+vbl_value thi  rv,x'1000'
+          bzs  vbl_value.ns
+          ohi  rv,x'e000'
+vbl_value.ns   equ  *
+          slls rv,2
+          l    t1,state.ip
+          clh  rv,0(t1)                      Check static vbl count
+          bnp  vbl_value.static
+          l    rv,0(rv,t1)
+          lr   temp,rv
+          srl  temp,28
+          clhi temp,variable_type
+          bne  decode.check_type
+          l    rv,variable.value(rv)
+          b    decode.check_type
+
+vbl_value.static    equ  *
+          l    rv,0(rv,t1)
+          b    decode.check_type
+
+addr_vbl_value equ  *
+          thi  rv,x'1000'
+          bzs  addr_vbl_value.ns
+          ohi  rv,x'e000'
+addr_vbl_value.ns   equ  *
+          slls rv,2
+          l    t1,state.ip
+          clh  rv,0(t1)                      Check static vbl count
+          bnp  addr_vbl_value.static
+          l    rv,0(rv,t1)
+          la   rv,variable.value(rv)
+          br   link
+
+addr_vbl_value.static    equ  *
+          la   rv,0(rv,t1)
+          br   link
+
+vbl_addr  thi  rv,x'1000'
+          bzs  vbl_addr.ns
+          ohi  rv,x'e000'
+vbl_addr.ns    equ  *
+          slls rv,2
+          l    t1,state.ip
+          clh  rv,0(t1)
+          bnp  do_error3                can't get vbl addr of static vbl.
+          l    rv,0(rv,t1)
+          br   link
+
+do_error1 st   pc.loc,state.pc.loc
+          bal  link,error
+error1    equ  *                        illegal immediate op
+
+do_error2 st   pc.loc,state.pc.loc
+          bal  link,error
+error2    equ  *                        illegal pc rel
+
+decode.check_type   equ  *
+          lr   t1,rv                    to check types
+          srl  t1,28
+          clhi t1,x'000f'               negative numbers are numbers
+          bnes decode.not_neg
+          lis  t1,0
+decode.not_neg lis  test_mask,1              hack to see if allowed
+          sll  test_mask,0(t1)
+          nr   optype,test_mask
+          bnzr link
+do_error3 st   pc.loc,state.pc.loc
+do_bad_type    equ  *
+          bal  link,error               you can't do this
+error3    equ  *                        disallowed operand
+
+          align 4
+error_table    equ  *
+          dc   error0,0
+error_table.message equ  *
+          dc   c'ii      '
+
+          dc   0,0
+error_table_break_entry  equ  *
+          dc   c'break   '
+          dc   error1,0,c'immed op'
+          dc   error2,0,c'pcrel op'
+          dc   error3,0,c'bad type'     Instruction called with bad object type
+          dc   error4,0,c'unkn obj'     attempt to get chars out of non-strin
+          dc   error5,0,c'bad loc '
+          dc   error6,0,c'^opcode '
+          dc   error7,0,c'unk mark'     del or set mark called with bad buffer
+          dc   error8,0,c'#del > z'
+          dc   error9,0,c'arry^bit'     array was not a bit array
+          dc   error10,0,c'bad case'
+          dc   error11,0,c'^chrarry'    array was not 128 bits long
+          dc   error12,0,c'srchfail'
+          dc   error13,0,c'array sz'    array cell size w{s not 1 or 32 bits
+          dc   error14,0,c'bash ROB'    attempt to modify Read Only Buffer
+          dc   error15,0,c'call^fun'    call not invoked with a function
+          dc   error16,0,c'ary^mtch'    the arrays to copy_array didn't match
+
+error_table_size equ 16*error_table_block_size
+          dc   0,c'unkn err'
+error_table_block_size   equ  12
+
+error     save
+          st   stack,state.sp
+          lis  t1,0
+          ni   link,x'ffff'
+error.look     equ  *
+          clh  link,error_table(t1)
+          bes  error.found_it
+          ais  t1,error_table_block_size
+          clhi t1,error_table_size
+          bnps error.look
+
+error.found_it equ  *
+          la   t1,error_table.message(t1)    get real ptr to name of error
+error.signal_entry  equ  *
+          l    t2,state.sb                   now look for a handler on the stack
+error.check_frame   equ  *
+          l    t3,frame.handlers(t2)
+          bz   error.next_frame
+error.check_handler equ  *
+          l    t4,handler.error_name(t3)     get first 4 chars of handler name
+          bz   error.next_handler
+          cl   t4,0(t1)
+          bne  error.next_handler
+          l    temp,4(t1)
+          cl   temp,handler.error_name+4(t3)
+          bes  error.found_handler
+error.next_handler  equ  *
+          l    t3,handler.next(t3)
+          bnz  error.check_handler
+error.next_frame    equ  *
+          l    t2,frame.saved_sb(t2)         try previous frame
+          bz   error.report
+          b    error.check_frame
+
+error.found_handler equ  *
+          lis  temp,0
+          st   temp,handler.error_name(t3)   don't handle this one again
+          l    rv,handler.contour(t3)        find where to unwind to.
+          st   rv,op1(ops)
+          bal  link,unwind                   how this gets back is beyond me
+          change_pc t3,handler.addr
+          b    next_inst
+
+*         dcl $error entry (char(8),structure,code_ptr);
+*         call $error (msg,state,state.pc.buf->buffer.base);
+
+error.report   equ  *
+          l    temp,0(t1)
+          ci   temp,c'brea'
+          be   signal_break                  continue to signal
+          st   t1,arg1p(sp)
+          la   temp,state
+          st   temp,arg2p(sp)
+          l    ap,state.pc.buf
+          l    temp,buffer.base(ap)
+          st   temp,arg4p(sp)
+          la   temp,arg4p(sp)
+          st   temp,arg3p(sp)
+          lhi  temp,16
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,sine_error$error
+          dc   0                        if we come back...
+
+signal_break   equ  *
+          lis  temp,0
+          st   temp,condition_ptr(sp)   revert...
+          svc  6,0
+          dc   c'break   '
+          la   temp,cond(sp)
+          st   temp,condition_ptr(sp)
+          b    next_inst
+
+break_handler  equ  *
+          lh   5,break_enabled
+          bzs  bh.wait
+          am   5,state.pc.loc           this is the back up amount
+          la   14,do_a_break
+          l    15,contour_ptr
+          bal  3,!1+32                  non-local goto
+          dc   0
+
+bh.wait   lis  5,1
+          sth  5,breakp
+          br   link
+
+*    This is the unwinder.  It is passed a stack pointer, saves
+*    all the registers, and returns the stack to the state it was
+*    when the sp was saved.  That is, it gets the call frame right
+*    and then sets stack to op1(ops) then restores all the other
+*    register.  The most important thing, of course, that it unbinds
+*    variables bound in the intervening frames.
+
+unwind    stm  0,register_save(sp)
+unwind.next_frame   equ  *
+          l    t1,state.sb
+          l    rv,op1(ops)
+          clr  rv,t1
+          bp   unwind.done
+          lh   temp,frame.num_temps(t1)
+          slls temp,2
+          la   t2,frame.temps(t1)
+          ar   t2,temp
+          lh   t3,frame.num_bound(t1)        get number of vbls bound in this frame
+          mh   t3,binding_block_size
+unwind.unbind  equ  *
+          sis  t3,12
+          bms  unwind.unbound
+          l    t4,bindings.value_addr(t2,t3) get atom to restore
+          l    temp,bindings.old_value(t2,t3)     get saved value
+          st   temp,0(t4)
+          bs   unwind.unbind
+
+binding_block_size  dc   12
+
+unwind.unbound equ  *                   now restore the other stuff
+          change_pc t1,frame.saved_pc
+*         l    temp,frame.saved_pc(t1)
+*         st   temp,state.pc
+          l    temp,frame.saved_sb(t1)
+          st   temp,state.sb
+          l    temp,frame.saved_ip(t1)
+          st   temp,state.ip
+          b    unwind.next_frame
+unwind.done    equ  *
+          st   rv,state.sp
+          st   rv,stack*4+register_save(sp)  this will become register: stack
+          lm   0,register_save(sp)
+          br   link
+
+*    Allocate is called with size in reg 5 and ptr is returned in rv
+
+allocate  save
+          l    0,top_of_heap
+          ar   0,5                      add in size of allocate
+          cl   0,time_to_gc
+          bl   al.doit
+          lh   rv,inhibit_gc
+          bnz  al.doit
+          st   5,0(stack)
+          ais  stack,4
+          st   stack,state.sp           so gc can notice
+          lhi  0,36
+          st   0,alist_size(sp)
+          la   0,state
+          st   0,arg1p(sp)
+          la   0,top_of_heap
+          st   0,arg2p(sp)
+          la   0,linel_ptr
+          st   0,arg3p(sp)
+          la   0,current_screen_ptr(ls)
+          st   0,arg4p(sp)
+          la   0,screen_chain(ls)
+          st   0,arg5p(sp)
+          la   0,lines.screen(ls)
+          st   0,arg6p(sp)
+          la   0,op1(ops)
+          st   0,arg7p(sp)
+          la   0,restart.buf(ls)
+          st   0,arg8p(sp)
+          la   15,alist(sp)
+          bal  link,sine_gc
+          sis  stack,4
+          l    5,0(stack)
+          l    0,top_of_heap
+          st   0,time_to_gc
+          lhi  1,10*2048                     give him at least 10 pages
+          clh  1,top_of_heap+2               check offset part of ptr
+          bnps al.round_up
+          sth  1,time_to_gc+2                set offset part to 10 pages
+          bs   al.doit
+al.round_up    equ  *
+          sis  0,1
+          ohi  0,x'1fff'                     round up to nearest 4K
+          ais  0,1
+          st   0,time_to_gc
+
+al.doit   sis  5,1
+          ohi  5,3
+          ais  5,1
+          l    rv,top_of_heap
+          am   5,top_of_heap
+          b    popj
+
+pl1_allocate   .ent 16+56
+          la   stack,arg4p(sp)
+          lis  0,1
+          ahm  0,inhibit_gc
+          l    1,4(15)
+          l    5,0(1)
+          l    2,8(15)
+          bal  link,allocate
+          st   rv,0(2)                  return the ptr
+          lcs  0,1
+          ahm  0,inhibit_gc
+          .rtn
+
+*    Free operator takes a length in 5 and a ptr in rv and frees the block
+
+free      br   link
+
+          save
+          la   6,code                   use code for the ptr
+          st   rv,code
+          l    7,string_space           get the ptr to SS
+          bal  3,!1+80                  PL/1 free operator
+          restore
+          br   link
+
+*         This sets up a utility by which chars can be extracted from
+*         an arbitrary source very easily.
+
+get_init  lr   type,source
+          srl  type,28
+          clhi type,0                   is it a number?
+          bnes try_string
+          cli  source,!2
+          bps  is_string
+          la   get,get_number
+          br   link
+
+try_string     clhi type,string_type
+          bnes try_window
+is_string la   get,get_string
+          la   text_ptr,string.text(source)
+          lh   type,string.length(source)
+          st   type,get.stop
+          br link
+
+try_window     equ  *
+          clhi type,window_type
+          bne  try_buffer
+          l    type,window.real_text(source)
+          lr   temp,type
+          srl  temp,28
+          clhi temp,buffer_type
+          bne  tw.string
+          save
+          lr   source,type
+          bal  link,swap_in
+          restore
+          l    get,window.start(source)
+          l    text_ptr,marker.mv(get)
+          cl   text_ptr,buffer.gap_end(type)
+          bls  tw.below_gap
+          ar   index,text_ptr
+          bs   tw.still_below_gap
+tw.below_gap   equ  *
+          a    index,marker.mv(get)
+          make_absolute_bufptr     index,type
+tw.still_below_gap  equ  *
+          l    get,window.stop(source)
+          l    temp,marker.mv(get)
+          st   temp,get.stop
+          l    text_ptr,buffer.base(type)
+          lr   source,type                        make it look like a buffer
+          cl   temp,buffer.gap_start(type)        if below gap then string
+          bnps tw.only_below_gap
+          la   get,get_buffer
+          br   link
+tw.only_below_gap   equ  *
+          la   get,get_string
+          br   link
+
+tw.start_stop  l    type,window.start(source)
+
+*    We'll take index to be set to starting position from beginning of window
+
+          a    index,marker.mv(type)
+
+          l    type,window.stop(source)
+          l    temp,marker.mv(type)
+          st   temp,get.stop
+          br   link
+tw.string      la   text_ptr,string.text(type)
+          lh   temp,string.length(type)
+          st   temp,get.stop
+          la   get,get_string
+          b    tw.start_stop
+
+try_buffer     equ  *
+          clhi type,buffer_type
+          bne  try_gnirt
+          save
+          bal  link,swap_in
+          restore
+          l    text_ptr,base(source)
+          l    type,top(source)
+          st   type,get.stop
+          la   get,get_buffer
+          make_absolute_bufptr     index,source
+*         cl   index,buffer.gap_start(source)
+*         bnpr link
+*         a    index,buffer.gap_end(source)
+*         s    index,buffer.gap_start(source)
+          br   link
+
+try_gnirt clhi type,gnirt_type
+          bne  error4_do
+          l    text_ptr,gnirt.text_ptr(source)
+          lh   temp,gnirt.real_length(source)
+          st   temp,get.stop
+          la   get,get_string
+          br   link
+
+error4_do bal  link,error
+error4    equ  *                        illegal object
+
+*    Routines to get chars from asorted places.
+
+get.too_far    lcs  char,1                             error return
+          br   link
+
+get_number     equ  *
+          la   get,get.too_far
+          lr   char,source this is just a hack
+          b    4(link)                                 correct return
+
+get_string     cl   index,get.stop
+          bnls get.too_far
+          lb   char,0(text_ptr,index)
+          ais  index,1
+          b    4(link)                                 correct return
+
+get_buffer     equ  *
+          cl   index,buffer.gap_start(source)     are we about to fall into gap??
+          bls  gb.no_gap
+          bes  gb.go_to_upper                     no.
+          cl   index,buffer.gap_end(source)
+          bnls gb.just_upper
+gb.go_to_upper equ  *
+          l    index,buffer.gap_end(source)
+gb.just_upper  equ  *
+          la   get,gb.no_gap
+gb.no_gap      equ  *
+          cl   index,get.stop
+          bnl  get.too_far                        we've run off end
+gb.just_get    equ  *
+          lb   char,0(index,text_ptr)
+          ais  index,1
+          b    4(link)                                 correct return
+
+getr_init lr   type,source
+          srl  type,28
+          clhi type,0                   is it a number?
+          bnes rtry_string
+          cli  source,!2
+          bps  ris_string
+          la   get,get_number
+          br   link
+
+rtry_string    equ  *
+          clhi type,string_type
+          bnes rtry_window
+ris_string     equ  *
+          la   get,getr_string
+          la   text_ptr,string.text(source)
+          lis  type,0
+          st   type,getr.stop
+          br link
+
+rtry_window    equ  *
+          clhi type,window_type
+          bne  rtry_buffer
+          l    type,window.real_text(source)
+          lr   temp,type
+          srl  temp,28
+          clhi temp,buffer_type
+          bne  rtw.string
+          save
+          lr   source,type
+          bal  link,swap_in
+          restore
+          l    text_ptr,buffer.base(type)
+          l    get,window.start(source)
+          a    index,marker.mv(get)
+          make_absolute_bufptr     index,type
+          lis  temp,0
+          st   temp,getr.stop
+          lr   source,type                        make it look like a buffer
+          la   get,getr_buffer
+          br   link
+
+rtw.start_stop l    type,window.stop(source)
+          l    temp,marker.mv(type)
+          sr   temp,index
+          lr   index,temp
+          sis  index,1
+          l    type,window.start(source)
+          l    temp,marker.mv(type)
+          st   temp,getr.stop
+          br   link
+rtw.string     la   text_ptr,string.text(type)
+          lh   temp,string.length(type)
+          st   temp,getr.stop
+          la   get,getr_string
+          b    rtw.start_stop
+
+rtry_buffer    clhi type,buffer_type
+          bne  rtry_gnirt
+          save
+          bal  link,swap_in
+          restore
+          l    text_ptr,base(source)
+          sis  index,1
+*         make_absolute_bufptr     index,source
+          c    index,buffer.gap_start(source)
+          bms  rtb.below_gap
+          a    index,buffer.gap_end(source)
+          s    index,buffer.gap_start(source)
+rtb.below_gap  equ  *
+          lis  type,0
+          st   type,getr.stop
+          la   get,getr_buffer
+          br   link
+
+rtry_gnirt     equ  *
+          clhi type,gnirt_type
+          bne  error4_do
+          l    text_ptr,gnirt.text_ptr(source)
+          lis  temp,0
+          st   temp,getr.stop
+          la   get,getr_string
+          br   link
+
+*    Routines to get chars from asorted places.
+
+getr_string    c    index,getr.stop
+          bm   get.too_far                             no more chars
+          lb   char,0(text_ptr,index)
+          sis  index,1
+          b    4(link)                                 correct return
+
+getr_buffer    equ  *
+          c    index,getr.stop
+          bm   get.too_far
+          lb   char,0(index,text_ptr)
+          sis  index,1
+          c    index,buffer.gap_start(source)
+          bm   4(link)                                 correct return
+          cl   index,buffer.gap_end(source)
+          bnl  4(link)                                 still in upper part
+          l    index,gap_start(source)
+          sis  index,1
+          b    4(link)
+
+*         Move gap to current location and make it big enough
+
+read_only_bit  equ  0
+
+update_gap     save
+          lr   source,sink
+          bal  link,swap_in
+          lis  gstart,buffer.flags.read_only
+          tbt  gstart,buffer.flags(sink)
+          bzs  OK_to_ug
+          bal  link,error
+error14   equ  *                                  attempt to write in ROB
+
+OK_to_ug  l    gstart,gap_start(sink)
+          l    gsize,gap_end(sink)
+          sr   gsize,gstart                       gap size
+          cl   gstart,buffer.location(sink)       are we already at the gap?
+          bne  ug.must_shuffle                    no (sigh)
+          clr  gsize,len                          is there enough room?
+          bnm  popj                               yes (win)
+
+ug.must_shuffle lis temp,0
+          sr   temp,gsize                         negative gap size
+          l    markers,marker_chain(sink)
+          bzs  ug.no_unmark
+ug.unmark_loop cl   gstart,marker.mv(markers)          get marker value and fix it.
+          bnls ug.fix_next
+          am   temp,marker.mv(markers)            subtract gap size
+ug.fix_next    l    markers,marker.next(markers)       cdr down list
+ug.unmark_test bnzs ug.unmark_loop
+
+ug.no_unmark   cl   gstart,buffer.location(sink)       which side are we on?
+          bl   ug.above_gap
+          lr   temp,gsize
+          sr   temp,len
+          bp   ug.move_lower
+
+ug.move_upper  lr   temp,gsize               save old size
+          lhi  gsize,250(len)           be sure there's plenty of room
+          sr   temp,gsize               get amount upper has to move
+          l    from_ptr,text_ptr(sink)
+          a    from_ptr,gap_end(sink)
+          lr   to_ptr,from_ptr
+          sr   to_ptr,temp              difference was negative
+
+          l    num_ch,top(sink)
+          s    num_ch,gap_end(sink)
+          bal  link,subst
+
+ug.move_lower  l    from_ptr,text_ptr(sink)
+          a    from_ptr,buffer.location(sink)
+          lr   to_ptr,from_ptr
+          ar   to_ptr,gsize
+          lr   num_ch,gstart
+          s    num_ch,buffer.location(sink)
+          bal  link,subst
+          b    ug.unfix_m               restore the markers
+
+ug.above_gap   l    from_ptr,text_ptr(sink)
+          lr   to_ptr,from_ptr
+          a    from_ptr,gap_end(sink)
+          ar   to_ptr,gstart
+          l    num_ch,buffer.location(sink)
+          sr   num_ch,gstart
+          bal  link,subst
+
+          lr   temp,gsize
+          sr   temp,len
+          bp   ug.unfix_m               that's all folks
+
+ug.ag.upper    lhi  gsize,250(len)           new gap size (room to grow)
+          l    from_ptr,text_ptr(sink)
+          lr   to_ptr,from_ptr
+          a    from_ptr,gap_end(sink)
+          ar   from_ptr,num_ch          skip num moved before
+          a    to_ptr,buffer.location(sink)
+          ar   to_ptr,gsize
+          lr   temp,num_ch              save num_ch
+          l    num_ch,top(sink)
+          s    num_ch,gap_end(sink)
+          sr   num_ch,temp
+          bal  link,subst
+
+ug.unfix_m     l    temp,buffer.location(sink)         reset gap ptr etc.
+          lr   gstart,temp
+          l    num_ch,top(sink)
+          s    num_ch,gap_end(sink)
+          a    num_ch,gap_start(sink)             length of buffer
+          s    num_ch,buffer.location(sink)   get size of upper part
+          st   temp,gap_start(sink)
+          ar   temp,gsize
+          st   temp,gap_end(sink)
+          ar   temp,num_ch
+          st   temp,top(sink)
+
+          l    markers,marker_chain(sink)    reset all the markers
+          bz   ug.set_bc
+ug.unfix_loop  cl   gstart,marker.mv(markers)     has this one need help?
+          bnls ug.unfix_next                 no
+          am   gsize,marker.mv(markers) make it absolute (not like pt)
+ug.unfix_next  l    markers,marker.next(markers)
+ug.unfix_test  bnzs ug.unfix_loop
+
+ug.set_bc la   temp,buffer.base(sink)
+          st   temp,arg1p(sp)
+          l    temp,buffer.top(sink)
+          slls temp,3
+          st   temp,segptr(sp)
+          la   temp,segptr(sp)
+          st   temp,arg2p(sp)
+          lis  temp,12
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,hcs$set_bit_count
+          b    popj
+
+*         A good char copy routine
+
+subst          save                     for saftey's sake
+          lis  t1,1 ammount to increment by (1 or -1)
+          lr   t2,from_ptr
+          ar   t2,num_ch                place to stop
+          clr  to_ptr,from_ptr          go forwards or backwards?
+          bls  trans                    go forward
+          be   popj
+*
+          lr   t2,from_ptr
+          sis  t2,1
+          lcs  t1,1
+          ar   from_ptr,num_ch
+*start char transfer at ends of strings
+          sis  from_ptr,1
+          ar   to_ptr,num_ch
+          sis  to_ptr,1
+*
+trans          clr  from_ptr,t2              are we done yet?
+          be   popj                if so return.
+          lb   char,0(from_ptr)         else transfer a character
+          stb  char,0(to_ptr)
+          ar   from_ptr,t1
+          ar   to_ptr,t1
+          bs   trans
+
+*         To swap buffers into this address space
+
+swap_in   save
+          l    temp,base(source)        does it need swapping in?
+          cli  temp,x'0002fffe'
+          bne  popj
+          st   source,code
+          la   temp,code
+          st   temp,arg1p(sp)
+          lis  temp,8
+          st   temp,alist_size(sp)
+          la   ap,alist(sp)
+          bal  link,$incorify
+          b    popj
+
+          entry     do_a_gc
+          extrn     sine_gc
+do_a_gc   .ent 16
+          lhi  0,36
+          st   0,alist_size(sp)
+          la   0,state
+          st   0,arg1p(sp)
+          la   0,top_of_heap
+          st   0,arg2p(sp)
+          la   0,linel_ptr
+          st   0,arg3p(sp)
+          la   0,current_screen_ptr(ls)
+          st   0,arg4p(sp)
+          la   0,screen_chain(ls)
+          st   0,arg5p(sp)
+          la   0,lines.screen(ls)
+          st   0,arg6p(sp)
+          la   0,op1(ops)
+          st   0,arg7p(sp)
+          la   0,restart.buf(ls)
+          st   0,arg8p(sp)
+          la   15,alist(sp)
+          bal  link,sine_gc
+          lis  0,0
+          st   0,number_of_allocates
+          .rtn
+
+*         This entry point takes a pl1 char varying string and returns
+*         a pointer to the variable of that name.
+
+pl1_make_vbl   .ent 4+56+56        need two save areas
+          lis  0,1
+          ahm  0,inhibit_gc
+          la   stack,84(sp)
+          l    source,4(ap)
+
+          la   ops,80(sp)
+          st   source,op1(ops)
+          bal  link,make_variable
+          l    temp,error_register      did it exist?
+          bz   pmv.copy_name            no...
+pmv.rtn   l    2,8(ap)
+          st   rv,0(2)                  return vbl
+          l    2,12(ap)
+          st   temp,0(2)                return a bad code
+          lcs  0,1
+          ahm  0,inhibit_gc
+          .rtn
+
+pmv.copy_name  equ  *
+          lr   t1,rv                    save ptr to vbl
+          lh   5,string.length(source)
+          ais  5,2                      for length field
+          bal  link,allocate
+          sis  5,2
+          sth  5,string.length(rv)
+          sis  5,1
+pmv.loop  lb   char,string.text(5,source)
+          stb  char,string.text(5,rv)
+          sis  5,1
+          bnms pmv.loop
+
+          oi   rv,string_bits
+          st   rv,variable.name(t1)
+          lr   rv,t1
+          lis  temp,0
+          b    pmv.rtn
+
+popj      restore
+          br   link
+
+op_entry_len   dc   12
+
+               entry     opcode_table
+opcode_table   equ  *
+
+op_tab_origin  equ  *
+operand_types  dc   0,0,0,0
+inst_type      dc   0
+address        dc   error
+
+*         incl opcodes
+* here is the incl file itself
+
+ org 12+op_tab_origin
+ dc 1,1,0,0,1,add
+ org 24+op_tab_origin
+ dc 1,1,0,0,1,sub
+ org 36+op_tab_origin
+ dc 1,1,0,0,1,mul
+ org 48+op_tab_origin
+ dc 1,1,0,0,1,div
+ org 60+op_tab_origin
+ dc 1,1,0,0,1,mod
+ org 720+op_tab_origin
+ dc 1,1,0,0,1,min
+ org 732+op_tab_origin
+ dc 1,1,0,0,1,max
+ org 72+op_tab_origin
+ dc x'0801',x'0801',0,0,1,and
+ org 84+op_tab_origin
+ dc x'0801',x'0801',0,0,1,or
+ org 96+op_tab_origin
+ dc x'0801',x'0801',0,0,1,xor
+ org 108+op_tab_origin
+ dc x'0010',0,0,0,1,car
+ org 120+op_tab_origin
+ dc x'0010',0,0,0,1,cdr
+ org 1308+op_tab_origin
+ dc x'0010',0,0,0,1,caar
+ org 1320+op_tab_origin
+ dc x'0010',0,0,0,1,cadr
+ org 1332+op_tab_origin
+ dc x'0010',0,0,0,1,cdar
+ org 1344+op_tab_origin
+ dc x'0010',0,0,0,1,cddr
+ org 132+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,cons
+ org 144+op_tab_origin
+ dc x'0010',x'3fff',0,0,1,rplaca
+ org 156+op_tab_origin
+ dc x'0010',x'3fff',0,0,1,rplacd
+ org 168+op_tab_origin
+ dc x'3fff',0,0,0,1,push
+ org 180+op_tab_origin
+ dc x'4000',0,0,0,0,pop
+ org 192+op_tab_origin
+ dc 1,0,0,0,0,squish
+ org 204+op_tab_origin
+ dc x'8000',1,0,0,0,call
+ org 456+op_tab_origin
+ dc x'0020',1,0,0,0,call_vbl
+ org 216+op_tab_origin
+ dc 0,0,0,0,1,return
+ org 228+op_tab_origin
+ dc 1,0,0,0,1,num_args
+ org 240+op_tab_origin
+ dc x'8000',0,0,0,0,bind
+ org 972+op_tab_origin
+ dc x'0020',0,0,0,0,bind_vbl
+ org 1644+op_tab_origin
+ dc x'4000',0,0,0,0,bind_static
+ org 252+op_tab_origin
+ dc 1,0,0,0,0,goto
+ org 1188+op_tab_origin
+ dc 0,0,0,0,1,t
+ org 1200+op_tab_origin
+ dc 0,0,0,0,1,nil
+ org 264+op_tab_origin
+ dc x'3fff',1,0,0,1,ift
+ org 276+op_tab_origin
+ dc x'3fff',1,0,0,1,ifnil
+ org 864+op_tab_origin
+ dc 1,0,0,0,0,berr
+ org 876+op_tab_origin
+ dc 1,0,0,0,0,bnoerr
+ org 1164+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,eq
+ org 1176+op_tab_origin
+ dc x'3fff',0,0,0,1,not
+ org 288+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,gp
+ org 300+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,gep
+ org 312+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,lp
+ org 324+op_tab_origin
+ dc x'3fff',x'3fff',0,0,1,lep
+ org 1224+op_tab_origin
+ dc 2,0,0,0,1,modifiedp
+ org 1380+op_tab_origin
+ dc x'040f',2,1,0,1,looking_atp
+ org 1404+op_tab_origin
+ dc x'3fff',0,0,0,1,functionp
+ org 1416+op_tab_origin
+ dc x'3fff',0,0,0,1,stringp
+ org 1428+op_tab_origin
+ dc x'3fff',0,0,0,1,variablep
+ org 336+op_tab_origin
+ dc 2,x'040f',0,0,1,search
+ org 348+op_tab_origin
+ dc 2,x'040f',0,0,1,rsearch
+ org 360+op_tab_origin
+ dc 2,x'040f',0,0,1,searchr
+ org 372+op_tab_origin
+ dc 2,x'040f',0,0,1,rsearchr
+ org 384+op_tab_origin
+ dc 0,0,0,0,1,tyi
+ org 396+op_tab_origin
+ dc 1,0,0,0,1,tyo
+ org 408+op_tab_origin
+ dc x'040f',1,1,1,1,print
+ org 1236+op_tab_origin
+ dc x'040f',1,1,1,1,print_clearing
+ org 1044+op_tab_origin
+ dc 0,0,0,0,1,tyis
+ org 420+op_tab_origin
+ dc x'3fff',x'4000',0,0,1,store
+ org 1632+op_tab_origin
+ dc x'3fff',x'0020',0,0,1,estore
+ org 432+op_tab_origin
+ dc 0,0,0,0,0,display
+ org 444+op_tab_origin
+ dc x'0100',1,0,0,1,force_display
+ org 1284+op_tab_origin
+ dc x'0101',1,1,0,0,display_screen
+ org 480+op_tab_origin
+ dc 0,0,0,0,1,make_buffer
+ org 492+op_tab_origin
+ dc x'040f',0,0,0,1,make_string
+ org 504+op_tab_origin
+ dc x'0002',0,0,0,1,make_window
+ org 1596+op_tab_origin
+ dc x'040f',0,0,0,1,make_variable
+ org 1356+op_tab_origin
+ dc x'040f',x'0200',0,0,1,intern
+ org 516+op_tab_origin
+ dc 0,0,0,0,1,make_mark
+ org 528+op_tab_origin
+ dc 2,0,0,0,1,make_screen
+ org 900+op_tab_origin
+ dc 1,1,0,0,1,make_array
+ org 1020+op_tab_origin
+ dc 0,0,0,0,1,make_gnirt
+ org 540+op_tab_origin
+ dc x'040f',x'0402',0,0,1,insert
+ org 1212+op_tab_origin
+ dc x'040b',1,1,x'0402',1,insert_region
+ org 1260+op_tab_origin
+ dc x'040e',x'3fff',x'0402',0,1,insert_ioa
+ org 552+op_tab_origin
+ dc x'040e',1,0,0,1,nth
+ org 1572+op_tab_origin
+ dc 2,1,0,0,1,nthr
+ org 564+op_tab_origin
+ dc 2,0,0,0,1,location
+ org 576+op_tab_origin
+ dc x'040f',0,0,0,1,length
+ org 588+op_tab_origin
+ dc 2,1,0,0,1,set_loc
+ org 600+op_tab_origin
+ dc 2,1,0,0,1,add_to_loc
+ org 612+op_tab_origin
+ dc x'0402',1,0,0,1,delete
+ org 660+op_tab_origin
+ dc x'0080',2,1,0,1,set_mark
+ org 672+op_tab_origin
+ dc x'0080',2,0,0,1,unset_mark
+ org 684+op_tab_origin
+ dc x'0080',2,0,0,1,eval_mark
+ org 840+op_tab_origin
+ dc x'040e',1,0,0,0,handle
+ org 852+op_tab_origin
+ dc 0,0,0,0,0,revert
+ org 1272+op_tab_origin
+ dc x'040f',0,0,0,0,signal
+ org 888+op_tab_origin
+ dc 0,0,0,0,0,discard
+ org 912+op_tab_origin
+ dc x'0200',1,0,0,0,fill_vbl_array
+ org 1560+op_tab_origin
+ dc x'0200',x'040f',0,0,1,fill_char_array
+ org 924+op_tab_origin
+ dc x'0200',1,0,0,1,ar
+ org 936+op_tab_origin
+ dc x'3fff',x'0200',1,0,1,as
+ org 1584+op_tab_origin
+ dc x'0200',x'0201',0,0,1,copy_array
+ org 948+op_tab_origin
+ dc 2,x'040f',0,0,1,read_file
+ org 960+op_tab_origin
+ dc x'040f',x'040f',0,0,1,write_file
+ org 1296+op_tab_origin
+ dc x'040f',0,0,0,1,load
+ org 984+op_tab_origin
+ dc x'0020',0,0,0,1,eval
+ org 996+op_tab_origin
+ dc x'8000',0,0,0,1,quote
+ org 1008+op_tab_origin
+ dc x'0200',1,x'3fff',0,0,bind_array_cell
+ org 1032+op_tab_origin
+ dc x'0008',1,1,0,1,define_window
+ org 1056+op_tab_origin
+ dc 2,0,0,0,1,to_token_fa
+ org 1068+op_tab_origin
+ dc 2,0,0,0,1,to_token_fr
+ org 1080+op_tab_origin
+ dc 2,0,0,0,1,to_token_ba
+ org 1092+op_tab_origin
+ dc 2,0,0,0,1,to_token_br
+ org 1104+op_tab_origin
+ dc 2,0,0,0,1,over_token_fa
+ org 1116+op_tab_origin
+ dc 2,0,0,0,1,over_token_fr
+ org 1128+op_tab_origin
+ dc 2,0,0,0,1,over_token_ba
+ org 1140+op_tab_origin
+ dc 2,0,0,0,1,over_token_br
+ org 1464+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_in_fa
+ org 1476+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_in_fr
+ org 1488+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_in_ba
+ org 1500+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_in_br
+ org 1512+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_not_in_fa
+ org 1524+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_not_in_fr
+ org 1536+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_not_in_ba
+ org 1548+op_tab_origin
+ dc 2,x'060f',0,0,1,find_first_not_in_br
+ org 1152+op_tab_origin
+ dc 1,0,0,0,1,command_args
+ org 1248+op_tab_origin
+ dc x'040e',0,0,0,0,cline
+ org 1440+op_tab_origin
+ dc x'040f',0,0,0,1,call_af
+ org 1368+op_tab_origin
+ dc 1,0,0,0,0,restart_at
+ org 1392+op_tab_origin
+ dc x'0020',0,0,0,1,get_pname
+ org 1452+op_tab_origin
+ dc x'040f',1,0,0,1,get_hpos
+ org 1608+op_tab_origin
+ dc 2,0,0,0,1,make_read_only
+ org 1620+op_tab_origin
+ dc x'0020',0,0,0,1,get_documentation
+ org 1680+op_tab_origin
+ dc 0,0,0,0,0,0
+
+          incl inst
+          incl control
+          incl file
+
+          end
+
+^L

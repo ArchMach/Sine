@@ -1,0 +1,131 @@
+
+pl1_load: proc (state,code_ptr);
+
+%include state;
+%include stack;
+%include data_types;
+
+ dcl flag bit(1) init ("0"b);
+
+ dcl code_ptr pointer;
+
+ dcl size builtin;
+
+ dcl tp pointer;
+ dcl buf ptr;
+ dcl ftp fixed(31) defined tp;
+ dcl initial_ftp fixed(31);
+ dcl initial_p ptr;
+ dcl top_level pointer static init(null());
+ dcl bfixed fixed based;
+ dcl 1 entry based(tp),
+          2 type fixed,
+          2 len fixed,
+          2 text char(1000);
+ dcl fun pointer;
+ dcl ip_area_ptr pointer;
+ dcl ip_area(0:1) pointer based(ip_area_ptr);
+ dcl fp ptr;
+ dcl bp ptr;
+
+ dcl code fixed(31);
+ dcl (i,j) fixed;
+ dcl blk_size fixed;
+ dcl num fixed;
+ dcl num_s fixed;
+ dcl segno fixed;
+
+ dcl $pl1_make_vbl entry (fixed,ptr,fixed(31));
+ dcl $pl1_make_buffer entry (ptr,ptr);
+ dcl $pl1_allocate entry (fixed(31),ptr);
+ dcl $debug bit(1) external;
+ dcl scs$ioa entry options(variable);
+
+ dcl scs$allocn entry(fixed(31),ptr,area);
+ dcl $error entry (char(8),structure);
+
+common:
+     tp = code_ptr;
+     segno = baseno(tp);
+     ftp = ftp + tp->bfixed;
+
+     num = tp->bfixed;
+     ftp = ftp + 2;
+     if num = 0 then return;
+     initial_ftp = ftp;
+
+     call $pl1_make_buffer(buf,code_ptr);
+     call $pl1_allocate (num*4+4,ip_area_ptr);
+     unspec(ip_area_ptr) = unspec(ip_area_ptr) | "b0000000"b4;
+     ftp = initial_ftp;
+
+     do i = 1 to num;
+          if entry.len = 0 then go to quit_out;
+               /* no more vbl names: the rest are static */
+          if entry.type < 0
+               then do;
+                    call $pl1_allocate (2+entry.len,fp);
+                    unspec(fp) = unspec(fp) | "20000000"b4;
+                    fp->string.length = entry.len;
+                    substr(fp->string.text,1,entry.len) =
+                         substr(entry.text,1,entry.len);
+                    end;
+               else do;
+                    if substr(entry.text,1,entry.len) = "!#$%&"
+                         then do;
+                              fp = null();
+                              code = -1;
+                              end;
+                         else call $pl1_make_vbl (entry.len,fp,code);
+                    if entry.type > 0
+                         then do;   /* make a function */
+                              call $pl1_allocate (size(function),fun);
+                              fun->function.buf = buf;
+                              fun->function.loc = entry.type*2;
+                              fun->function.vbl_tab = ip_area_ptr;
+                              unspec(fun) = unspec(fun) | "60000000"b4;
+                              if fp = null()
+                                   then fp = fun;
+                                   else fp->variable.value = fun;
+                              end;
+                         else if code>=0 then fp->variable.value = null();
+                    end;
+          ip_area(i) = fp;
+
+if $debug then call scs$ioa("^i:^a(^p)-> ^p",i,
+     substr(entry.text,1,entry.len),fp,ptr(segno,entry.type*2));
+
+          if substr(entry.text,1,entry.len) = "top_level"
+               then top_level = ip_area(i);
+          ftp = ftp + (entry.len+1)/2*2 + 4;
+          end;
+
+quit_out:
+     num_s = num-i+1;
+     ip_area(0) = ptr(num_s*4,num);
+     if num_s > 0 then do i = num to num_s+1 by -1;
+          ip_area(i) = ip_area(i-num_s);          /* copy the vbls up */
+          end;
+     if ^flag then return;   /* just load: no special hacks */
+
+     if top_level = null() then call $error("no top'l",state);
+     frame.name_of_function = top_level->variable.name;
+     tp = top_level->variable.value;
+     pc.loc = tp->function.loc+2;
+     pc.buf = buf;
+     ip = tp->function.vbl_tab;
+     frame.num_temps = addrel(code_ptr,pc.loc-2)->bfixed;
+     sp = addrel(sb,size(frame)+(frame.num_temps-2)*4);
+     return;
+
+load_init:  entry(state,code_ptr);
+
+ dcl already_here bit(1) static init("0"b);
+
+     if already_here then return;
+     already_here = "1"b;
+     flag = "1"b;
+     go to common;
+
+end;
+^L

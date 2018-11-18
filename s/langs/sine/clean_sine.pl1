@@ -1,0 +1,38 @@
+
+clean_sine: proc;
+cs:entry;
+
+dcl hcs$terminate_in_space entry (ptr,char(4),fixed(31));
+dcl i fixed;
+dcl code fixed(31);
+dcl space char(4) init("^@^@^@^A");
+dcl lp ptr init(ptr(14,96));
+dcl 1 link based(lp),
+     2 b1 bit(16),
+     2 b2 bit(16),
+     2 b3 bit(16),
+     2 l1 fixed,
+     2 l2 fixed,
+     2 name char(7);
+dcl scs$ioa entry options(variable);
+dcl scs$get_arg_info entry (fixed,fixed,fixed,ptr);
+dcl ap ptr;
+dcl al fixed;
+dcl arg char(al) based(ap);
+
+call scs$get_arg_info(1,i,al,ap);
+if ap ^= null() then space = arg;
+
+do i = 3 to 12;
+     call hcs$terminate_in_space(ptr(i,0),space,code);
+     end;
+if name = "pb$plod"
+     then do;
+          b1 = "e100"b4;
+          b2 = "4000"b4;
+          b3 = "0000"b4;
+          end;
+     else call scs$ioa("link to pb$plod moved??");
+
+end;
+^L
